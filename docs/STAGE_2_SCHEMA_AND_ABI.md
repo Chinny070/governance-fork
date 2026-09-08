@@ -420,6 +420,19 @@ Studio's local compile/schema-load is expected to succeed without broadcasting. 
 
 Whether pass or fail, the user reports the outcome and any error text. Pass → Stage 3 unblocks. Fail → Stage 2B revisits based on the specific error.
 
+### 18.7 Result — PASSED
+
+**MANUAL STUDIO SCHEMA LOAD: PASSED** on `contracts/governance_fork.py` at SHA-256 `14362bb511cd573559b7db78d62d06f9963ec42b2f7065db210d9787209b355e` (bytes 18 430, lines 645). ABI count: **29** (11 write + 2 admin + 16 view). No deployment. No broadcast. The Studio-load path was blocked twice before this pass:
+
+1. First attempt (SHA `b40b02939b750cbbd6538d72443c32996f10a2b7f20caac6058130c8cd0cda1d`) failed with `NameError: name 'dataclass' is not defined` at line 202. Cause: `from genlayer import *` does not re-export `dataclass`; the local reference (`RealityLock`) does not use `@dataclass` at all so this had not been exercised.
+2. A `runner comment does not start with version, using default v0.1.0` warning surfaced from the runner log, confirming the memory note about a `# vX.Y.Z` tag on line 1.
+
+**Applied fix (committed as a Stage 2B follow-up):** added `# v0.2.16` as line 1 and `from dataclasses import dataclass` after `from genlayer import *`. No other changes.
+
+**What this proves — and does not prove.** Studio's `gen_getContractSchemaForCode` succeeded, so the source parses, the schema extractor resolves every type in the ABI, and every `@allow_storage @dataclass` record was registered. Every subsequent stage may rely on the shape of the schema.
+
+Runtime business logic — including typed `TreeMap[u256, DataClass]` set/get, `DynArray[u256]` mutation semantics, `hashlib.sha256(...)` invocation, `gl.message.sender_address` usage, `gl.vm.UserError` raising, and every state transition — has **NOT been live verified**. Schema-load and runtime execution are different gates. Runtime verification is Stage 15.
+
 ## 19. Payable-Signature Review
 
 **Scope.** `submit_root_envelope`, `create_fork`, `challenge_verdict` are marked `@gl.public.write.payable` in the scaffold, even though bond capture is Stage 10.
