@@ -51,7 +51,7 @@ All decorated `@allow_storage @dataclass`:
 - `ParamKV(key: str, value: str)`
 - `Dao(name, url, importer: Address, imported_at: u256)`
 - `IntentEnvelope(objective, beneficiary_class, resource_type, scope, essential_constraints, mutable_dimensions, immutable_dimensions, parent_proposal_fingerprint: bytes, envelope_version: u32)`
-- `RootProposal(dao_id, external_proposal_id, title, proposal_url, proposer: Address, body_fingerprint: bytes, structured_parameters: DynArray[ParamKV], envelope: IntentEnvelope, envelope_status, envelope_case_id, identity_status, imported_at)`
+- `RootProposal(dao_id, external_proposal_id, title, proposal_url, proposer: Address, import_fingerprint: bytes, web_content_fingerprint: bytes, structured_parameters: DynArray[ParamKV], envelope: IntentEnvelope, envelope_status, envelope_case_id, identity_status, imported_at)` — see §17 for the two-fingerprint model.
 - `DeltaEntry(dimension_name, parent_value, fork_value, claim_kind)`
 - `ForkBody(title, summary, structured_parameters: DynArray[ParamKV], reasoning)`
 - `Fork(parent_id, root_id, dao_id, creator: Address, depth: u32, body: ForkBody, delta: DynArray[DeltaEntry], status, body_fingerprint: bytes, delta_fingerprint: bytes, evidence_case_id, current_verdict_id, child_count: u32, created_at, creator_bond_id)`
@@ -276,20 +276,188 @@ Wait — Stage 3 must not implement `gl.nondet.*`. That is Stage 6.
 **Corrected Stage 3 scope:**
 
 - `register_dao` — validate + write + index.
-- `import_root_proposal` — validate + write + index, **skipping body fingerprint computation** (fingerprint is set by Stage 6's evidence-freeze pathway using `gl.nondet.web.render`; Stage 3 leaves `body_fingerprint = b""` and `envelope_status = ENVELOPE_NOT_SUBMITTED`).
+- `import_root_proposal` — validate + write + index, and **compute `import_fingerprint` deterministically at import time** (Stage 2B correction; see §17). `web_content_fingerprint` is left `b""` at import and is populated later by the Stage 6 evidence-freeze pathway; `envelope_status = ENVELOPE_NOT_SUBMITTED`; `identity_status = COMMUNITY_IMPORTED`.
 - `submit_root_envelope` — validate envelope schema bounds, validate `dao_id` and `root_id` exist, allocate a `ROOT_ENVELOPE` case, allocate evidence records with `frozen = false`, append to indexes. **Bond capture** is Stage 10 — Stage 3 exposes the payable signature but rejects any non-zero `value` explicitly (until Stage 10, calling with `value > 0` raises `UserError`).
 
 That gives Stage 3 a shippable slice of deterministic behavior with no dependency on Stage 6, Stage 7, or Stage 10.
 
 Stage 3 tests (Stage-3-appropriate only): DAO registration happy path, duplicate name (if we disallow), too-long name/url, DAO-not-found in `import_root_proposal`, structured-parameter cap, envelope schema bounds, essential/mutable/immutable dimension cap enforcement, `envelope_status` initial value, index writes match entity writes.
 
-## 17. Confirmations
+## 17. Root Proposal Fingerprint Model (Stage 2B)
 
-- ✅ Zero `gl.nondet.*` calls in Stage 2 (grep-checked; see §11).
-- ✅ Zero web retrieval in Stage 2.
-- ✅ Zero semantic adjudication logic in Stage 2.
-- ✅ Zero native GEN accounting or transfer in Stage 2.
+Two distinct fingerprints live on `RootProposal`, cleanly separated by origin and by when they are populated:
+
+### 17.1 `import_fingerprint: bytes` — always set at import
+
+**Purpose.** Deterministic identifier of what the importer actually submitted. Binds the imported root to its canonical form so that any later reader can verify no field was silently mutated.
+
+**Populated at:** Stage 3, inside `import_root_proposal`, before writing to storage.
+
+**Never empty after successful import.** If canonicalization or hashing fails, the whole `import_root_proposal` call is rejected atomically.
+
+**Canonical fields bound:**
+
+| Field | Encoding |
+|---|---|
+| `dao_id` | decimal ASCII of the `u256` value |
+| `external_proposal_id` | UTF-8, bounded ≤ `MAX_EXTERNAL_ID_LEN` |
+| `title` | UTF-8, bounded ≤ `MAX_TITLE_LEN` |
+| `proposal_url` | UTF-8, bounded ≤ `MAX_URL_LEN` |
+| `structured_parameters` | UTF-8, key/value pairs, sorted by `key` ascending |
+
+The **URL is included** because two proposals with identical text at different URLs are semantically distinct in Governance Fork (the URL is the identity of the authoritative source we will later fetch).
+
+The **`proposer` address and `imported_at` timestamp are excluded** because they are metadata about the import event, not about the proposal itself. Re-importing the same proposal from a different address at a different time yields the same `import_fingerprint`, which is the desired property.
+
+**Canonical serialization (V1):**
+
+```
+"gf-root/v1"                                              ASCII, 10 bytes
+"\n" "dao_id=" <decimal(dao_id)> "\n"                     ASCII
+"external_proposal_id=" <utf8(external_proposal_id)> "\n"
+"title=" <utf8(title)> "\n"
+"proposal_url=" <utf8(proposal_url)> "\n"
+"structured_parameters=" "\n"
+  for each ParamKV, sorted by key ascending:
+    "  " <utf8(key)> "=" <utf8(value)> "\n"
+```
+
+The `"gf-root/v1"` prefix is a domain-separation tag: it makes an `import_fingerprint` unusable as any other kind of fingerprint (evidence, delta, envelope) even if the byte content happened to collide. `v1` is the schema version so a future canonicalization change is distinguishable.
+
+**Bounds guarantee unambiguous parsing.** Every string field has a maximum length enforced at validation before hashing (Stage 3's validation gate). Newlines inside a field are rejected at validation time — governance titles, URLs, and structured parameters never legitimately contain `\n`. Rejection at the validation gate keeps the canonical form unambiguous without length-prefixing.
+
+**Algorithm.** SHA-256, if the GenLayer runtime exposes Python's standard `hashlib`.
+
+**Classification: PROVISIONAL CRYPTOGRAPHIC.**
+
+- Intent is a cryptographic hash. SHA-256 is preferred; keccak-256 or blake2b are acceptable substitutes if the runtime exposes them instead.
+- Whether Python `hashlib` is exposed inside the GenLayer contract environment is **NOT YET LIVE VERIFIED**. The local reference (`RealityLock`) uses Python `json` from stdlib successfully, which suggests other stdlib modules including `hashlib` are likely available, but this is inference, not proof.
+- Verification is a Stage 3 pre-check and a Stage 2B blocker: the manual Studio schema-load (§18) that imports `hashlib` in the module top-level is the earliest signal we can obtain without deploying. If schema-load rejects `import hashlib`, we fall back to a runtime-exposed alternative primitive.
+- No unsupported API is invented in Stage 2. The contract source does **not yet** import `hashlib` — that will be added in Stage 3 once the schema-load gate confirms it, or an alternative primitive is chosen.
+
+**Fallback if no cryptographic hash primitive is exposed:** a documented non-cryptographic deterministic byte encoding (the canonical serialization itself, prefix-tagged) may be used as a stopgap identifier. Classified as **PROVISIONAL NON-CRYPTOGRAPHIC** if that path is taken, and the entire economic threat model (§30 of Stage 1) is re-scored against the loss of collision-resistance. That path is not preferred and would trigger a Stage 6 revisit.
+
+### 17.2 `web_content_fingerprint: bytes` — filled later, from the authoritative page
+
+**Purpose.** Deterministic identifier of the actual page content fetched from `proposal_url` through the approved GenLayer web-content pathway. Distinct from `import_fingerprint` because the importer's submitted title/parameters may or may not match the page's content — that is what envelope adjudication decides.
+
+**Populated at:** Stage 6, by the evidence-freeze routine, when the root's authoritative page is fetched and its rendered text is sliced to `MAX_EVIDENCE_SLICE`.
+
+**Empty at import.** `b""` is the sentinel for "not yet fetched." Envelope adjudication in Stage 7 refuses to run if this is empty for the root envelope's authoritative evidence.
+
+**Algorithm.** SHA-256 over the sliced rendered text, wrapped in `gl.eq_principle.strict_eq` so validator consensus is bit-exact. Same runtime-availability caveat as §17.1.
+
+### 17.3 Never overloaded
+
+The two fingerprints are never confused. `import_fingerprint` is about what the importer canonically submitted; `web_content_fingerprint` is about what the world's authoritative source actually said. Their equality or inequality is never a business-logic signal — the semantic-adjudication path handles alignment. But storing them separately makes any later audit unambiguous.
+
+### 17.4 Fingerprints elsewhere (unchanged)
+
+- `Fork.body_fingerprint` and `Fork.delta_fingerprint` — deterministic hashes of the fork's submitted `ForkBody` and `DynArray[DeltaEntry]`. Not related to any web content. Same algorithm caveat.
+- `Evidence.content_fingerprint` — deterministic hash of the fetched slice for that specific evidence item. Web-content-derived, populated by `freeze_evidence` at Stage 6.
+- `Case.target_fingerprint`, `Case.evidence_set_fingerprint`, `Case.case_fingerprint` — deterministic hashes of the frozen adjudication inputs.
+
+None of these are `web_content_fingerprint` in the RootProposal-specific sense — that field is unique to the root's own page.
+
+## 18. Studio Schema-Load Procedure (Manual — User Action Required)
+
+Stage 2B leaves this as a **manual step for the user** because the automated environment for this session does not have a running GenLayer Studio instance. Studio's schema-load / compile action does not require a chain broadcast; it extracts the ABI from the source and reports errors without deploying. The user runs this locally.
+
+### 18.1 Exact target
+
+| Item | Value |
+|---|---|
+| Contract path | `contracts/governance_fork.py` |
+| Current SHA-256 | *(see the Stage 2B final report; re-run `python tests/stage_2_checks.py` to reproduce)* |
+| Byte count | *(see final report)* |
+| Line count | *(see final report)* |
+| ABI method count | 29 (11 write + 2 admin + 16 view) |
+| Depends header | `# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }` |
+| Constructor signature | `__init__(self, treasury_addr: Address)` — no `-> None` |
+
+### 18.2 Exact steps
+
+1. Start GenLayer Studio locally (e.g. via `genlayer up` or the installer entry point).
+2. Open the Studio UI in a browser at its usual local URL (typically `http://localhost:8080/` or `http://127.0.0.1:8000/` — Studio prints the actual URL on start).
+3. In the **Contracts** panel, choose **New Contract** or **Load Contract**, then paste the entire content of `contracts/governance_fork.py`.
+4. Trigger the **Compile** / **Load Schema** action. This is a local schema extraction only. **Do NOT click Deploy.**
+5. Wait for the schema panel to render.
+
+### 18.3 Successful schema extraction should show
+
+- No red error toast or console banner.
+- Constructor line: `__init__(treasury_addr: Address)`.
+- 29 methods in the method list, with these names (order may vary):
+
+  Writes (11): `register_dao`, `import_root_proposal`, `submit_root_envelope`, `create_fork`, `submit_fork_evidence`, `freeze_evidence`, `freeze_case`, `adjudicate`, `challenge_verdict`, `finalize`, `settle_bond`.
+
+  Admin (2): `pause`, `unpause`.
+
+  Views (16): `get_dao`, `list_daos`, `get_root_proposal`, `list_root_proposals_by_dao`, `get_fork`, `list_forks_of_root`, `list_forks_of_parent`, `get_verdict_history`, `get_verdict`, `get_evidence`, `list_evidence_of_case`, `get_case`, `get_challenge`, `list_challenges`, `get_bond`, `get_constants`.
+
+- `submit_root_envelope`, `create_fork`, `challenge_verdict` each marked **payable**.
+- Return type panel resolves `Dao`, `RootProposal`, `Fork`, `Evidence`, `Case`, `VerdictRecord`, `Challenge`, `Bond`, `PageIds`, `ConstantsView` as `@allow_storage @dataclass` records.
+- Storage panel shows: 8 entity `TreeMap`s (`daos`, `roots`, `forks`, `evidence`, `cases`, `verdicts`, `challenges`, `bonds`), 8 index `TreeMap`s, 8 `u256` counters, `treasury_addr: Address`, `paused: bool`.
+
+### 18.4 Likely failure signatures to capture
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Toast: "Schema load failed: `__init__`" | Constructor annotation issue | Verify no `-> None` on `__init__`. |
+| Toast: "Unknown type `u256`" or `u32` | Runtime primitive mismatch | Report to Stage 2B: primitive list needs revision. |
+| Toast: "Cannot serialize `DynArray[str]`" inside `IntentEnvelope` | Generic nesting limitation | Report; may need to promote nested `DynArray[str]` fields to bounded dataclass records. |
+| Toast: "Depends: unknown package" | `Depends` hash mismatch with installed SDK | Report the current SDK version so we can update the hash. |
+| Toast referencing `@allow_storage @dataclass` | Decorator ordering or import missing | Verify `from genlayer import *` exposes both decorators; verify the class has both decorators in the correct order. |
+| Some methods missing from the ABI list | Decorator not recognized or method-name conflict | Capture the exact missing names; compare against §33 of Stage 1. |
+| "Payable methods must accept `value` in the body" | Runtime requires body to reference `gl.message.value` when marked payable | Report; Stage 3 will add an explicit `if gl.message.value != u256(0): raise` at the top of each payable body. |
+| Any other unfamiliar error | Unknown | Copy the exact error text and file path/line into the Stage 2B report. |
+
+### 18.5 If Studio cannot test schema without deployment
+
+Studio's local compile/schema-load is expected to succeed without broadcasting. If the installed Studio version has removed the local schema-only path and only supports full deploy, the user should **stop and report that**. Deployment is user-controlled and out of Stage 2B scope. Governance Fork Stage 2B does not require deployment to pass.
+
+### 18.6 Reporting back
+
+Whether pass or fail, the user reports the outcome and any error text. Pass → Stage 3 unblocks. Fail → Stage 2B revisits based on the specific error.
+
+## 19. Payable-Signature Review
+
+**Scope.** `submit_root_envelope`, `create_fork`, `challenge_verdict` are marked `@gl.public.write.payable` in the scaffold, even though bond capture is Stage 10.
+
+**Decision: KEEP payable now.** Reasoning:
+
+1. **ABI stability.** Any integrator that reads the schema between Stage 2B and Stage 10 (frontends, indexers, other Intelligent Contracts) may cache the payable/non-payable classification. Flipping a method from non-payable to payable later is a breaking ABI change for cached clients. Keeping it payable now costs nothing and prevents a needless migration.
+2. **Atomic rollback.** Each body raises `gl.vm.UserError("stage-2: not implemented")` on the first line. In the confirmed local-reference pattern (`../RealityLock/contracts/reality_lock.py`), an unhandled raise rolls back the entire transaction atomically — including any `value` that would have been transferred with the call. The state is unchanged and the sender's `value` is not retained. Effectively, calling one of these methods with `value > 0` today reverts and returns the funds, exactly as if the call had never been made.
+3. **Belt-and-suspenders arrives in Stage 3.** Stage 3 will add an explicit `if gl.message.value != u256(0): raise gl.vm.UserError("value not yet accepted")` at the top of each payable body, before any Stage 3 logic runs. This is a defensive check that costs 1 line per method and eliminates any possibility of accidental value acceptance during the Stage 3 → Stage 10 window. It is not implemented at Stage 2B because Stage 2B does not touch method bodies beyond the current `raise`.
+4. **Alternative rejected.** Making the three methods non-payable now and re-enabling payable at Stage 10 would (a) create the ABI migration risk in point 1, (b) require the user to redeploy or run a schema-only re-load at Stage 10 for integrators to see the change, (c) not remove any real risk today (see point 2).
+
+**No bond capture logic is implemented at Stage 2B.** Payable exposure is ABI shape only.
+
+## 20. `CLAIM_UNCHANGED` — Final V1 Architecture
+
+Approved: `CLAIM_UNCHANGED` is omitted from V1 permanently.
+
+**V1 rules (final):**
+
+1. Only actually changed dimensions appear in `Fork.delta`. Enum values: `NARROWED`, `BROADENED`, `RESHAPED`, `REMOVED`, `ADDED`.
+2. A dimension absent from `Fork.delta` is claimed unchanged.
+3. Deterministic freeze-time validation confirms every parent parameter not covered by a `DeltaEntry` matches parent-side exactly. Any mismatch rejects the fork with reason `UNCLAIMED_MUTATION`.
+4. `envelope.immutable_dimensions` is independently checked against the parent regardless of delta contents; any mismatch is `IMMUTABLE_DIMENSION_MUTATION`, rejected at freeze.
+5. Stage 1 §8.1 has been updated to reflect this final decision.
+6. Stage 2 contract source and Stage 2B check `no unchanged delta kind` enforce omission going forward.
+
+No further discussion required.
+
+## 21. Confirmations
+
+- ✅ Zero `gl.nondet.*` calls in Stage 2 / 2B (grep-checked; see §11).
+- ✅ Zero web retrieval in Stage 2 / 2B.
+- ✅ Zero semantic adjudication logic in Stage 2 / 2B.
+- ✅ Zero native GEN accounting or transfer in Stage 2 / 2B.
 - ✅ Challenger reward source remains unresolved and unimplemented (§15).
+- ✅ Root import fingerprint model is defined and never empty after successful import (§17).
+- ✅ Payable-signature decision is documented (§19: KEEP).
+- ✅ `CLAIM_UNCHANGED` omission is final V1 architecture (§20).
 - ✅ Nothing was deployed or broadcast.
 - ✅ Frontend was not built.
 - ✅ Stage 3 was not started.

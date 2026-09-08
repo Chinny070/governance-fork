@@ -236,7 +236,13 @@ class RootProposal:
     title: str
     proposal_url: str
     proposer: Address
-    body_fingerprint: bytes
+    # Deterministic hash of the canonicalized submitted root data.
+    # Populated at Stage 3 on import. Never empty after successful import.
+    import_fingerprint: bytes
+    # Hash of the rendered authoritative page fetched via the approved
+    # GenLayer web-content pathway (see docs, Stage 6). Populated by the
+    # evidence-freeze routine. Empty at import.
+    web_content_fingerprint: bytes
     structured_parameters: DynArray[ParamKV]
     envelope: IntentEnvelope
     envelope_status: str

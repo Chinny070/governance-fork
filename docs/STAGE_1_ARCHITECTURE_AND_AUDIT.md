@@ -170,14 +170,16 @@ DeltaEntry {
   dimension_name: str (≤ 64)         # must match a name from envelope.mutable_dimensions
   parent_value:   str (≤ 256)         # frozen from parent's structured_parameters or resulting_state
   fork_value:     str (≤ 256)
-  claim_kind:     enum { NARROWED, BROADENED, RESHAPED, REMOVED, ADDED, UNCHANGED }
+  claim_kind:     enum { NARROWED, BROADENED, RESHAPED, REMOVED, ADDED }
 }
 ```
 
-- A fork produces `DynArray[DeltaEntry]` (≤ 16).
-- Every dimension a fork claims to change MUST appear as a `DeltaEntry` with `claim_kind != UNCHANGED`.
-- Every dimension in `envelope.immutable_dimensions` MUST either be absent or appear with `claim_kind = UNCHANGED` and identical values.
-- Any dimension present in the resulting fork body that is not listed as a `DeltaEntry` (change or unchanged) is a **candidate undeclared change** and flagged by the adjudicator under `UNDECLARED_SEMANTIC_CHANGE`.
+**FINAL for V1 (Stage 2B approved):** Only actually changed dimensions are stored. `CLAIM_UNCHANGED` is omitted from the enum entirely. Absent-from-delta dimensions are interpreted as claimed unchanged and are verified deterministically at freeze time against the parent's `structured_parameters`. Immutable dimensions from `envelope.immutable_dimensions` are independently checked against the parent regardless of delta contents.
+
+- A fork produces `DynArray[DeltaEntry]` (≤ 16) — **only changed entries**.
+- Every dimension a fork claims to change MUST appear as a `DeltaEntry`.
+- Every dimension in `envelope.immutable_dimensions` MUST either be absent from the delta (meaning "unchanged") and match the parent value exactly, or the fork is rejected at freeze time.
+- Any dimension present in the resulting fork body that differs from the parent AND is not listed as a `DeltaEntry` is a **candidate undeclared change** and flagged by the adjudicator under `UNDECLARED_SEMANTIC_CHANGE`.
 
 ### 8.2 Resulting Fork State
 
