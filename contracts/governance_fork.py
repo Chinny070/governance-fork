@@ -191,6 +191,10 @@ BOND_SETTLED_CHALLENGER_REWARD = "SETTLED_CHALLENGER_REWARD"
 TARGET_KIND_FORK = "FORK"
 TARGET_KIND_ROOT_ENVELOPE = "ROOT_ENVELOPE"
 
+# Parent kind (for a Fork's parent reference)
+PARENT_KIND_ROOT = "PARENT_ROOT"
+PARENT_KIND_FORK = "PARENT_FORK"
+
 # Resource type
 RESOURCE_TREASURY = "TREASURY"
 RESOURCE_PROTOCOL_PARAMETER = "PROTOCOL_PARAMETER"
@@ -308,6 +312,178 @@ def _paginate_ids(items, cursor_int: int, limit_int: int):
 
 
 # =========================================================================
+# Deterministic fork machinery (Stage 4). Pure helpers only.
+# =========================================================================
+
+_ALLOWED_CLAIM_KINDS = (
+    CLAIM_NARROWED,
+    CLAIM_BROADENED,
+    CLAIM_RESHAPED,
+    CLAIM_REMOVED,
+    CLAIM_ADDED,
+)
+
+
+def _params_to_dict(params):
+    out = {}
+    for kv in params:
+        out[kv.key] = kv.value
+    return out
+
+
+def _validate_delta_entries(delta, envelope):
+    n = len(delta)
+    if n < 1:
+        raise gl.vm.UserError("EMPTY_DELTA")
+    if n > MAX_DELTA_ENTRIES:
+        raise gl.vm.UserError("MAX_DELTA_ENTRIES exceeded")
+    mutable_set = {}
+    immutable_set = {}
+    for d in envelope.mutable_dimensions:
+        mutable_set[d] = True
+    for d in envelope.immutable_dimensions:
+        immutable_set[d] = True
+    seen = {}
+    for entry in delta:
+        _check_len(entry.dimension_name, 1, MAX_DIMENSION_NAME_LEN, "delta.dimension_name")
+        _check_len(entry.parent_value, 0, MAX_DELTA_VALUE_LEN, "delta.parent_value")
+        _check_len(entry.fork_value, 0, MAX_DELTA_VALUE_LEN, "delta.fork_value")
+        _reject_newline(entry.dimension_name, "delta.dimension_name")
+        _reject_newline(entry.parent_value, "delta.parent_value")
+        _reject_newline(entry.fork_value, "delta.fork_value")
+        ck_ok = False
+        for c in _ALLOWED_CLAIM_KINDS:
+            if entry.claim_kind == c:
+                ck_ok = True
+        if not ck_ok:
+            raise gl.vm.UserError("INVALID_CLAIM_KIND: " + str(entry.claim_kind))
+        if entry.dimension_name in seen:
+            raise gl.vm.UserError("DUPLICATE_DELTA_DIMENSION: " + entry.dimension_name)
+        seen[entry.dimension_name] = True
+        if entry.dimension_name in immutable_set:
+            raise gl.vm.UserError("IMMUTABLE_DIMENSION_MUTATION: " + entry.dimension_name)
+        if entry.dimension_name not in mutable_set:
+            raise gl.vm.UserError("DIMENSION_NOT_IN_ENVELOPE: " + entry.dimension_name)
+
+
+def _apply_delta(parent_params_dict, delta):
+    # Returns (resulting_params_dict, prose_dim_names_set).
+    # Assumes _validate_delta_entries has already passed.
+    resulting = {}
+    for k in parent_params_dict:
+        resulting[k] = parent_params_dict[k]
+    prose = {}
+    for entry in delta:
+        dim = entry.dimension_name
+        ck = entry.claim_kind
+        if dim in parent_params_dict:
+            # Structured mutation
+            if ck == CLAIM_ADDED:
+                raise gl.vm.UserError("ADDED_DIMENSION_ALREADY_EXISTS: " + dim)
+            if entry.parent_value != parent_params_dict[dim]:
+                raise gl.vm.UserError("PARENT_VALUE_MISMATCH: " + dim)
+            if ck == CLAIM_REMOVED:
+                del resulting[dim]
+            else:
+                resulting[dim] = entry.fork_value
+        else:
+            # Prose (dimension not in parent structured_parameters)
+            if ck == CLAIM_REMOVED:
+                raise gl.vm.UserError("CANNOT_REMOVE_PROSE_DIMENSION: " + dim)
+            if ck == CLAIM_ADDED:
+                if entry.parent_value != "":
+                    raise gl.vm.UserError("ADDED_PROSE_PARENT_MUST_BE_EMPTY: " + dim)
+                resulting[dim] = entry.fork_value
+            else:
+                # Prose reshape/narrow/broaden. No structural effect; parent
+                # value is the caller's claim about prior prose state and is
+                # not verified against stored data.
+                prose[dim] = True
+    return resulting, prose
+
+
+def _check_body_matches_computed(body_params, computed_params_dict):
+    got = _params_to_dict(body_params)
+    if len(got) != len(computed_params_dict):
+        raise gl.vm.UserError("UNCLAIMED_MUTATION: parameter count differs")
+    for k in got:
+        if k not in computed_params_dict:
+            raise gl.vm.UserError("UNCLAIMED_MUTATION: unexpected key " + k)
+        if got[k] != computed_params_dict[k]:
+            raise gl.vm.UserError("UNCLAIMED_MUTATION: value differs at " + k)
+
+
+def _canonicalize_delta(
+    dao_id_int,
+    root_id_int,
+    parent_kind,
+    parent_id_int,
+    parent_fingerprint,
+    delta,
+):
+    # Sort deltas by dimension_name ascending.
+    sorted_delta = sorted(list(delta), key=lambda d: d.dimension_name)
+    buf = b"gf-delta/v1\n"
+    buf = buf + b"dao_id=" + str(dao_id_int).encode("ascii") + b"\n"
+    buf = buf + b"root_id=" + str(root_id_int).encode("ascii") + b"\n"
+    buf = buf + b"parent_kind=" + parent_kind.encode("ascii") + b"\n"
+    buf = buf + b"parent_id=" + str(parent_id_int).encode("ascii") + b"\n"
+    buf = buf + b"parent_fingerprint=" + _hex_of(parent_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"deltas=\n"
+    for entry in sorted_delta:
+        buf = buf + b"  d:" + entry.dimension_name.encode("utf-8") + b"\n"
+        buf = buf + b"  k:" + entry.claim_kind.encode("ascii") + b"\n"
+        buf = buf + b"  p:" + entry.parent_value.encode("utf-8") + b"\n"
+        buf = buf + b"  f:" + entry.fork_value.encode("utf-8") + b"\n"
+    return buf
+
+
+def _canonicalize_fork_body(
+    dao_id_int,
+    root_id_int,
+    parent_kind,
+    parent_id_int,
+    title,
+    summary,
+    reasoning,
+    body_params,
+):
+    sorted_params = sorted(list(body_params), key=lambda kv: kv.key)
+    buf = b"gf-fork-body/v1\n"
+    buf = buf + b"dao_id=" + str(dao_id_int).encode("ascii") + b"\n"
+    buf = buf + b"root_id=" + str(root_id_int).encode("ascii") + b"\n"
+    buf = buf + b"parent_kind=" + parent_kind.encode("ascii") + b"\n"
+    buf = buf + b"parent_id=" + str(parent_id_int).encode("ascii") + b"\n"
+    buf = buf + b"title=" + title.encode("utf-8") + b"\n"
+    buf = buf + b"summary=" + summary.encode("utf-8") + b"\n"
+    buf = buf + b"reasoning=" + reasoning.encode("utf-8") + b"\n"
+    buf = buf + b"structured_parameters=\n"
+    for kv in sorted_params:
+        buf = buf + b"  " + kv.key.encode("utf-8") + b"=" + kv.value.encode("utf-8") + b"\n"
+    return buf
+
+
+def _delta_fingerprint(dao_id_int, root_id_int, parent_kind, parent_id_int,
+                      parent_fingerprint, delta):
+    return _sha256(
+        _canonicalize_delta(
+            dao_id_int, root_id_int, parent_kind, parent_id_int,
+            parent_fingerprint, delta,
+        )
+    )
+
+
+def _body_fingerprint(dao_id_int, root_id_int, parent_kind, parent_id_int,
+                     title, summary, reasoning, body_params):
+    return _sha256(
+        _canonicalize_fork_body(
+            dao_id_int, root_id_int, parent_kind, parent_id_int,
+            title, summary, reasoning, body_params,
+        )
+    )
+
+
+# =========================================================================
 # Data structures (bounded records)
 # =========================================================================
 
@@ -386,6 +562,7 @@ class ForkBody:
 @dataclass
 class Fork:
     parent_id: u256
+    parent_kind: str
     root_id: u256
     dao_id: u256
     creator: Address
@@ -395,6 +572,10 @@ class Fork:
     status: str
     body_fingerprint: bytes
     delta_fingerprint: bytes
+    # Immutable snapshot of the parent's authoritative fingerprint at fork
+    # creation time. For PARENT_ROOT -> root.import_fingerprint; for
+    # PARENT_FORK -> parent_fork.body_fingerprint.
+    parent_fingerprint: bytes
     evidence_case_id: u256
     current_verdict_id: u256
     child_count: u32
@@ -888,11 +1069,161 @@ class Contract(gl.Contract):
     def create_fork(
         self,
         parent_id: u256,
+        parent_kind: str,
         parent_fingerprint: bytes,
         delta: DynArray[DeltaEntry],
         body: ForkBody,
     ) -> u256:
-        raise gl.vm.UserError("stage-2: not implemented")
+        # Stage 4: payable ABI kept for stability. Stage 4 body does NOT
+        # read the incoming native-GEN value. Bond capture is Stage 10.
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        # Resolve parent + eligibility. The FAITHFUL gate is the FIRST
+        # check on the parent's authority. There is no bypass.
+        if parent_kind == PARENT_KIND_ROOT:
+            if parent_id not in self.roots:
+                raise gl.vm.UserError("root not found")
+            root = self.roots[parent_id]
+            # HARD RULE: only ENVELOPE_FAITHFUL may authorize fork creation.
+            # ENVELOPE_NOT_SUBMITTED, ENVELOPE_EVIDENCE_OPEN,
+            # ENVELOPE_EVIDENCE_FROZEN, ENVELOPE_ADJUDICATING,
+            # ENVELOPE_REJECTED, ENVELOPE_UNCLEAR all refuse. No production
+            # bypass exists.
+            if root.envelope_status != ENVELOPE_FAITHFUL:
+                raise gl.vm.UserError("root intent envelope not finalized faithful")
+            resolved_root_id = parent_id
+            resolved_dao_id = root.dao_id
+            resolved_parent_depth = 0
+            expected_parent_fp = root.import_fingerprint
+            parent_params = root.structured_parameters
+            parent_envelope = root.envelope
+        elif parent_kind == PARENT_KIND_FORK:
+            if parent_id not in self.forks:
+                raise gl.vm.UserError("parent fork not found")
+            pf = self.forks[parent_id]
+            if pf.status != FORK_FINALIZED_FAITHFUL:
+                raise gl.vm.UserError("parent fork not finalized faithful")
+            resolved_root_id = pf.root_id
+            resolved_dao_id = pf.dao_id
+            resolved_parent_depth = int(pf.depth)
+            expected_parent_fp = pf.body_fingerprint
+            parent_params = pf.body.structured_parameters
+            # The parent's envelope is the root's envelope; every fork
+            # under a root is bound to the same envelope.
+            parent_envelope = self.roots[pf.root_id].envelope
+        else:
+            raise gl.vm.UserError("invalid parent_kind")
+        if parent_fingerprint != expected_parent_fp:
+            raise gl.vm.UserError("parent_fingerprint mismatch (stale parent?)")
+        # Depth cap
+        new_depth = resolved_parent_depth + 1
+        if new_depth > MAX_DEPTH_PER_ROOT:
+            raise gl.vm.UserError("MAX_DEPTH_PER_ROOT exceeded")
+        # Per-parent children cap
+        if parent_id in self.forks_by_parent:
+            if len(self.forks_by_parent[parent_id]) >= MAX_CHILDREN_PER_PARENT:
+                raise gl.vm.UserError("MAX_CHILDREN_PER_PARENT reached")
+        # Per-root total fork cap
+        if resolved_root_id in self.forks_by_root:
+            if len(self.forks_by_root[resolved_root_id]) >= MAX_FORKS_PER_ROOT:
+                raise gl.vm.UserError("MAX_FORKS_PER_ROOT reached")
+        # Body bounds
+        _check_len(body.title, 1, MAX_TITLE_LEN, "body.title")
+        _check_len(body.summary, 0, MAX_REASONING_LEN, "body.summary")
+        _check_len(body.reasoning, 0, MAX_REASONING_LEN, "body.reasoning")
+        _reject_newline(body.title, "body.title")
+        _reject_newline(body.summary, "body.summary")
+        _reject_newline(body.reasoning, "body.reasoning")
+        # Body structured_parameters bounds (per-KV)
+        n_body_params = len(body.structured_parameters)
+        if n_body_params > MAX_STRUCTURED_PARAMS:
+            raise gl.vm.UserError("MAX_STRUCTURED_PARAMS exceeded")
+        seen_body_keys = {}
+        for kv in body.structured_parameters:
+            _check_len(kv.key, 1, MAX_KV_KEY_LEN, "body.param.key")
+            _check_len(kv.value, 0, MAX_KV_VAL_LEN, "body.param.value")
+            _reject_newline(kv.key, "body.param.key")
+            _reject_newline(kv.value, "body.param.value")
+            if kv.key in seen_body_keys:
+                raise gl.vm.UserError("duplicate structured parameter key in body")
+            seen_body_keys[kv.key] = True
+        # Delta structural validation
+        _validate_delta_entries(delta, parent_envelope)
+        # Deterministic delta application
+        parent_dict = _params_to_dict(parent_params)
+        computed_params, _prose = _apply_delta(parent_dict, delta)
+        # Enforce no undeclared mutation
+        _check_body_matches_computed(body.structured_parameters, computed_params)
+        # Fingerprints
+        delta_fp = _delta_fingerprint(
+            int(resolved_dao_id),
+            int(resolved_root_id),
+            parent_kind,
+            int(parent_id),
+            parent_fingerprint,
+            delta,
+        )
+        body_fp = _body_fingerprint(
+            int(resolved_dao_id),
+            int(resolved_root_id),
+            parent_kind,
+            int(parent_id),
+            body.title,
+            body.summary,
+            body.reasoning,
+            body.structured_parameters,
+        )
+        # Allocate + write
+        fork_id = self.next_fork_id
+        self.next_fork_id = u256(int(fork_id) + 1)
+        self.forks[fork_id] = Fork(
+            parent_id=parent_id,
+            parent_kind=parent_kind,
+            root_id=resolved_root_id,
+            dao_id=resolved_dao_id,
+            creator=gl.message.sender_address,
+            depth=u32(new_depth),
+            body=body,
+            delta=delta,
+            status=FORK_DRAFT,
+            body_fingerprint=body_fp,
+            delta_fingerprint=delta_fp,
+            parent_fingerprint=parent_fingerprint,
+            evidence_case_id=u256(0),
+            current_verdict_id=u256(0),
+            child_count=u32(0),
+            created_at=u256(0),
+            creator_bond_id=u256(0),
+        )
+        if resolved_root_id not in self.forks_by_root:
+            self.forks_by_root[resolved_root_id] = DynArray[u256]()
+        self.forks_by_root[resolved_root_id].append(fork_id)
+        if parent_id not in self.forks_by_parent:
+            self.forks_by_parent[parent_id] = DynArray[u256]()
+        self.forks_by_parent[parent_id].append(fork_id)
+        # Increment parent's child_count if parent is a fork
+        if parent_kind == PARENT_KIND_FORK:
+            pf = self.forks[parent_id]
+            self.forks[parent_id] = Fork(
+                parent_id=pf.parent_id,
+                parent_kind=pf.parent_kind,
+                root_id=pf.root_id,
+                dao_id=pf.dao_id,
+                creator=pf.creator,
+                depth=pf.depth,
+                body=pf.body,
+                delta=pf.delta,
+                status=pf.status,
+                body_fingerprint=pf.body_fingerprint,
+                delta_fingerprint=pf.delta_fingerprint,
+                parent_fingerprint=pf.parent_fingerprint,
+                evidence_case_id=pf.evidence_case_id,
+                current_verdict_id=pf.current_verdict_id,
+                child_count=u32(int(pf.child_count) + 1),
+                created_at=pf.created_at,
+                creator_bond_id=pf.creator_bond_id,
+            )
+        return fork_id
 
     @gl.public.write
     def submit_fork_evidence(
@@ -992,19 +1323,40 @@ class Contract(gl.Contract):
 
     @gl.public.view
     def get_fork(self, fork_id: u256) -> Fork:
-        raise gl.vm.UserError("stage-2: not implemented")
+        if fork_id not in self.forks:
+            raise gl.vm.UserError("fork not found")
+        return self.forks[fork_id]
 
     @gl.public.view
     def list_forks_of_root(
         self, root_id: u256, cursor: u256, limit: u32
     ) -> PageIds:
-        raise gl.vm.UserError("stage-2: not implemented")
+        if root_id not in self.roots:
+            raise gl.vm.UserError("root not found")
+        if root_id not in self.forks_by_root:
+            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+        arr = self.forks_by_root[root_id]
+        picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
+        items = DynArray[u256]()
+        for v in picked:
+            items.append(v)
+        return PageIds(items=items, next_cursor=u256(nxt))
 
     @gl.public.view
     def list_forks_of_parent(
         self, parent_id: u256, cursor: u256, limit: u32
     ) -> PageIds:
-        raise gl.vm.UserError("stage-2: not implemented")
+        # Parent may be a root or a fork. If neither exists, error.
+        if parent_id not in self.roots and parent_id not in self.forks:
+            raise gl.vm.UserError("parent not found")
+        if parent_id not in self.forks_by_parent:
+            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+        arr = self.forks_by_parent[parent_id]
+        picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
+        items = DynArray[u256]()
+        for v in picked:
+            items.append(v)
+        return PageIds(items=items, next_cursor=u256(nxt))
 
     @gl.public.view
     def get_verdict_history(

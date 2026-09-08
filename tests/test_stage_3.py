@@ -555,13 +555,23 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
         self.assertNotIn("gl.message.value", src)
 
-    def test_create_fork_still_unimplemented(self):
+    def test_create_fork_rejects_when_root_not_faithful(self):
+        # Stage 4 lands a real create_fork body, but its first check is
+        # envelope_status == ENVELOPE_FAITHFUL. Stage 3-produced roots have
+        # envelope_status = ENVELOPE_NOT_SUBMITTED (or _EVIDENCE_OPEN after
+        # a submit_root_envelope), so public create_fork remains
+        # unavailable in production.
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
         with self.assertRaises(UserError):
-            c.create_fork(rid, b"", shim.DynArray([]),
-                          gf.ForkBody(title="", summary="", structured_parameters=shim.DynArray([]), reasoning=""))
+            c.create_fork(
+                rid,
+                gf.PARENT_KIND_ROOT,
+                b"",
+                shim.DynArray([]),
+                gf.ForkBody(title="F", summary="", structured_parameters=shim.DynArray([]), reasoning=""),
+            )
 
     def test_adjudicate_still_unimplemented(self):
         c = _fresh()
