@@ -54,6 +54,12 @@ FORK_CREATION_BOND = 100000000000000000  # 0.1 * 10**18, provisional
 ENVELOPE_BOND = 100000000000000000
 CHALLENGE_BOND = 100000000000000000
 
+# Community-compatible fork-evidence quotas (Stage 5)
+CREATOR_EVIDENCE_CAP = 8
+COMMUNITY_EVIDENCE_CAP = 8
+MAX_COMMUNITY_EVIDENCE_PER_CONTRIBUTOR = 2
+MAX_EVIDENCE_BATCH = 8
+
 ADJUDICATION_DIMENSIONS_VERSION_FORK = 1
 ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE = 1
 
@@ -247,12 +253,50 @@ def _hex_of(b: bytes) -> str:
 
 
 def _normalize_url(url: str) -> str:
-    # Case-insensitive scheme+host normalization + trailing-slash strip.
-    # Deliberately does not touch query strings, fragments, or ports.
-    lowered = url.strip().lower()
-    if lowered.endswith("/"):
-        lowered = lowered[:-1]
-    return lowered
+    # Stage 5 correction: preserve path and query case (they may identify
+    # distinct real resources). Only scheme and host are lowercased.
+    # Fragments are dropped because they never reach the server and do not
+    # affect resource identity. Trailing slash on path is preserved: two
+    # paths differing only by a trailing "/" may point to different real
+    # resources, so we do not merge them here.
+    #
+    # Enforces http:// or https:// scheme because Governance Fork's future
+    # web-retrieval path (Stage 6b) is HTTP(S) only per the official docs.
+    trimmed = url.strip()
+    head = trimmed.lower()
+    if head.startswith("https://"):
+        scheme = "https"
+        rest = trimmed[8:]
+    elif head.startswith("http://"):
+        scheme = "http"
+        rest = trimmed[7:]
+    else:
+        raise gl.vm.UserError("URL must use http:// or https:// scheme")
+    hash_pos = -1
+    for i in range(len(rest)):
+        if rest[i] == "#":
+            hash_pos = i
+            break
+    if hash_pos >= 0:
+        rest = rest[:hash_pos]
+    host_end = len(rest)
+    for i in range(len(rest)):
+        ch = rest[i]
+        if ch == "/" or ch == "?":
+            host_end = i
+            break
+    host_part = rest[:host_end]
+    tail = rest[host_end:]
+    if len(host_part) == 0:
+        raise gl.vm.UserError("URL has empty host")
+    return scheme + "://" + host_part.lower() + tail
+
+
+def _contrib_key(case_id_int: int, sender_hex: str) -> str:
+    # Deterministic composite key for the per-contributor community-evidence
+    # counter. Uses ":" as separator; the address hex will not contain ":",
+    # and decimal digits will not either, so the split is unambiguous.
+    return str(case_id_int) + ":" + sender_hex
 
 
 def _extract_host(url: str) -> str:
@@ -676,6 +720,15 @@ class PageIds:
 
 @allow_storage
 @dataclass
+class CaseCounters:
+    # Contributor counters for a FORK case (Stage 5). Root-envelope cases
+    # do not populate this record; it stays at zero for them.
+    creator_count: u32
+    community_count: u32
+
+
+@allow_storage
+@dataclass
 class ConstantsView:
     max_daos: u32
     max_roots_per_dao: u32
@@ -730,6 +783,15 @@ class Contract(gl.Contract):
     # key = lowercase hex of RootProposal.import_fingerprint, value = root_id.
     # Enforces "exact duplicate imported root proposals rejected" at import.
     import_fingerprint_index: TreeMap[str, u256]
+
+    # Stage 5 fork evidence contributor counters.
+    # fork_case_counters:      case_id -> CaseCounters(creator, community)
+    # fork_case_contrib_count: "<case_id>:<addr_hex>" -> community count for
+    #                          that specific contributor on that case.
+    # These are only populated for CASE_TYPE_FORK cases. Root-envelope cases
+    # do not use them (contributor policy differs at the envelope layer).
+    fork_case_counters: TreeMap[u256, CaseCounters]
+    fork_case_contrib_count: TreeMap[str, u32]
 
     # Monotonic ID counters
     next_dao_id: u256
@@ -1235,7 +1297,184 @@ class Contract(gl.Contract):
         authority_claims: DynArray[str],
         temporal_markers: DynArray[str],
     ) -> u256:
-        raise gl.vm.UserError("stage-2: not implemented")
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if fork_id not in self.forks:
+            raise gl.vm.UserError("fork not found")
+        fork = self.forks[fork_id]
+        # Only DRAFT (before any evidence) or EVIDENCE_OPEN accept new evidence.
+        if fork.status != FORK_DRAFT and fork.status != FORK_EVIDENCE_OPEN:
+            raise gl.vm.UserError("fork not accepting new evidence")
+        # Parallel arrays must have equal length; batch must be non-empty and
+        # bounded so a single caller cannot bypass per-address caps by
+        # inflating the batch.
+        n = len(evidence_urls)
+        if n < 1:
+            raise gl.vm.UserError("empty evidence batch")
+        if n > MAX_EVIDENCE_BATCH:
+            raise gl.vm.UserError("MAX_EVIDENCE_BATCH exceeded")
+        if (
+            len(evidence_classes) != n
+            or len(relevance_claims) != n
+            or len(authority_claims) != n
+            or len(temporal_markers) != n
+        ):
+            raise gl.vm.UserError("evidence arrays must have equal length")
+        # Sender classification (creator vs community). Never accept a
+        # caller-supplied contributor type; derive from actual sender.
+        sender = gl.message.sender_address
+        is_creator = sender == fork.creator
+        # Resolve the fork's canonical case (create on first submission).
+        creating_case = fork.status == FORK_DRAFT
+        if creating_case:
+            case_id = self.next_case_id
+            existing_creator_count = 0
+            existing_community_count = 0
+            existing_case_evidence_count = 0
+            existing_contrib_count = 0
+        else:
+            case_id = fork.evidence_case_id
+            counters = self.fork_case_counters[case_id]
+            existing_creator_count = int(counters.creator_count)
+            existing_community_count = int(counters.community_count)
+            if case_id in self.evidence_by_case:
+                existing_case_evidence_count = len(self.evidence_by_case[case_id])
+            else:
+                existing_case_evidence_count = 0
+            ck = _contrib_key(int(case_id), sender.as_hex)
+            if ck in self.fork_case_contrib_count:
+                existing_contrib_count = int(self.fork_case_contrib_count[ck])
+            else:
+                existing_contrib_count = 0
+        # Cap enforcement (whole-batch atomic). If any resulting cap would be
+        # exceeded, reject the batch entirely.
+        if existing_case_evidence_count + n > MAX_EVIDENCE_PER_CASE:
+            raise gl.vm.UserError("MAX_EVIDENCE_PER_CASE would be exceeded")
+        if is_creator:
+            if existing_creator_count + n > CREATOR_EVIDENCE_CAP:
+                raise gl.vm.UserError("CREATOR_EVIDENCE_CAP would be exceeded")
+        else:
+            if existing_community_count + n > COMMUNITY_EVIDENCE_CAP:
+                raise gl.vm.UserError("COMMUNITY_EVIDENCE_CAP would be exceeded")
+            if existing_contrib_count + n > MAX_COMMUNITY_EVIDENCE_PER_CONTRIBUTOR:
+                raise gl.vm.UserError("MAX_COMMUNITY_EVIDENCE_PER_CONTRIBUTOR would be exceeded")
+        # Per-item validation + normalized-URL dedup against existing case
+        # evidence and against earlier items in this same batch.
+        seen_norm_in_batch = {}
+        # Prebuild set of already-registered normalized URLs on the case.
+        existing_norm = {}
+        if not creating_case:
+            if case_id in self.evidence_by_case:
+                for eid in self.evidence_by_case[case_id]:
+                    prior = self.evidence[eid]
+                    existing_norm[_normalize_url(prior.url)] = True
+        for i in range(n):
+            url = evidence_urls[i]
+            ec = evidence_classes[i]
+            rc = relevance_claims[i]
+            ac = authority_claims[i]
+            tm = temporal_markers[i]
+            _check_len(url, 1, MAX_URL_LEN, "evidence.url")
+            _reject_newline(url, "evidence.url")
+            _check_len(rc, 0, MAX_RELEVANCE_CLAIM_LEN, "evidence.relevance_claim")
+            _reject_newline(rc, "evidence.relevance_claim")
+            _check_len(ac, 0, MAX_AUTHORITY_CLAIM_LEN, "evidence.authority_claim")
+            _reject_newline(ac, "evidence.authority_claim")
+            _check_len(tm, 0, MAX_TEMPORAL_MARKER_LEN, "evidence.temporal_marker")
+            _reject_newline(tm, "evidence.temporal_marker")
+            ec_ok = False
+            for allowed in _ALLOWED_EVIDENCE_CLASSES:
+                if ec == allowed:
+                    ec_ok = True
+            if not ec_ok:
+                raise gl.vm.UserError("evidence_class out of range")
+            norm = _normalize_url(url)
+            if norm in seen_norm_in_batch:
+                raise gl.vm.UserError("duplicate normalized URL in batch")
+            if norm in existing_norm:
+                raise gl.vm.UserError("duplicate normalized URL already on case")
+            seen_norm_in_batch[norm] = True
+        # All validation passed. Commit case creation (if first submission)
+        # and all evidence records atomically.
+        if creating_case:
+            self.next_case_id = u256(int(case_id) + 1)
+            self.cases[case_id] = Case(
+                case_type=CASE_TYPE_FORK,
+                target_id=fork_id,
+                target_kind=TARGET_KIND_FORK,
+                target_fingerprint=fork.body_fingerprint,
+                evidence_ids=DynArray[u256](),
+                evidence_set_fingerprint=b"",
+                adjudication_dimensions_version=u32(ADJUDICATION_DIMENSIONS_VERSION_FORK),
+                case_fingerprint=b"",
+                state=CASE_OPEN,
+                retry_count=u32(0),
+                last_attempt_at=u256(0),
+            )
+            self.fork_case_counters[case_id] = CaseCounters(
+                creator_count=u32(0),
+                community_count=u32(0),
+            )
+            self.evidence_by_case[case_id] = DynArray[u256]()
+        # Allocate evidence records
+        new_ids = DynArray[u256]()
+        for i in range(n):
+            evidence_id = self.next_evidence_id
+            self.next_evidence_id = u256(int(evidence_id) + 1)
+            self.evidence[evidence_id] = Evidence(
+                case_id=case_id,
+                submitter=sender,
+                url=evidence_urls[i],
+                normalized_source=_extract_host(evidence_urls[i]),
+                evidence_class=evidence_classes[i],
+                relevance_claim=relevance_claims[i],
+                authority_claim=authority_claims[i],
+                temporal_marker=temporal_markers[i],
+                content_fingerprint=b"",
+                submitted_at=u256(0),
+                frozen=False,
+            )
+            new_ids.append(evidence_id)
+        # Append in submission order to the case's evidence index.
+        for eid in new_ids:
+            self.evidence_by_case[case_id].append(eid)
+        # Update contributor counters.
+        old_counters = self.fork_case_counters[case_id]
+        if is_creator:
+            new_counters = CaseCounters(
+                creator_count=u32(int(old_counters.creator_count) + n),
+                community_count=old_counters.community_count,
+            )
+        else:
+            new_counters = CaseCounters(
+                creator_count=old_counters.creator_count,
+                community_count=u32(int(old_counters.community_count) + n),
+            )
+            ck = _contrib_key(int(case_id), sender.as_hex)
+            self.fork_case_contrib_count[ck] = u32(existing_contrib_count + n)
+        self.fork_case_counters[case_id] = new_counters
+        # Advance fork state on first submission and record case pointer.
+        if creating_case:
+            self.forks[fork_id] = Fork(
+                parent_id=fork.parent_id,
+                parent_kind=fork.parent_kind,
+                root_id=fork.root_id,
+                dao_id=fork.dao_id,
+                creator=fork.creator,
+                depth=fork.depth,
+                body=fork.body,
+                delta=fork.delta,
+                status=FORK_EVIDENCE_OPEN,
+                body_fingerprint=fork.body_fingerprint,
+                delta_fingerprint=fork.delta_fingerprint,
+                parent_fingerprint=fork.parent_fingerprint,
+                evidence_case_id=case_id,
+                current_verdict_id=fork.current_verdict_id,
+                child_count=fork.child_count,
+                created_at=fork.created_at,
+                creator_bond_id=fork.creator_bond_id,
+            )
+        return case_id
 
     @gl.public.write
     def freeze_evidence(self, evidence_id: u256) -> None:

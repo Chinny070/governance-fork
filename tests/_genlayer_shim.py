@@ -74,6 +74,13 @@ class Address(str):
     def __new__(cls, v=""):
         return super().__new__(cls, str(v))
 
+    @property
+    def as_hex(self):
+        # Matches the local-reference pattern (gl.message.sender_address.as_hex
+        # returns a str). Address values in shim land are already hex-shaped
+        # strings, so we just return self.
+        return str(self)
+
 
 # ---------------------------------------------------------------------------
 # Storage collections

@@ -479,16 +479,32 @@ class EvidenceMetadataTests(unittest.TestCase):
             )
 
     def test_normalized_url_duplicate_rejected(self):
+        # Stage 5 tightened normalization: only scheme + host are
+        # case-normalized; path and query are preserved verbatim. So the
+        # dedup collision is on scheme+host, not on path-case.
         c, rid = self._prep()
         urls, cls, rel, auth, tm = _evidence_bundle(
             urls=(
-                "https://example.com/foo/",
-                "HTTPS://Example.com/FOO",
+                "https://example.com/foo",
+                "HTTPS://Example.com/foo",
             ),
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
         )
         with self.assertRaises(UserError):
             c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+
+    def test_distinct_path_case_NOT_deduped(self):
+        # Stage 5 correction: path is case-sensitive; two URLs differing only
+        # by path case are DIFFERENT resources and must NOT be deduped.
+        c, rid = self._prep()
+        urls, cls, rel, auth, tm = _evidence_bundle(
+            urls=(
+                "https://example.com/foo",
+                "https://example.com/FOO",
+            ),
+            classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
+        )
+        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)  # no raise
 
     def test_bad_evidence_class_rejected(self):
         c, rid = self._prep()
