@@ -125,13 +125,11 @@ Four candidates were considered:
 - **C. Importer proposes envelope; GenLayer adjudicates whether it faithfully represents the root proposal, using the same evidence machinery as fork adjudication.** More work, but reuses the same primitive and keeps human authorship auditable.
 - **D. Deterministic template.** Only works for narrow proposal families.
 
-**V1 recommendation: C.** Importer submits envelope + at least one `OFFICIAL_GOVERNANCE` evidence URL. A dedicated adjudication case (`case_type = ROOT_ENVELOPE`) runs the same `INTENT_PRESERVATION` / `EVIDENCE_SUPPORT` / `SOURCE_AUTHORITY` / `INTERNAL_CONSISTENCY` dimensions against a slightly reworded question:
+**V1 recommendation: C.** Importer submits envelope + at least one `OFFICIAL_GOVERNANCE` evidence URL. A dedicated adjudication case (`case_type = ROOT_ENVELOPE`) runs against a **distinct** question and a **distinct** semantic dimension set — fork-specific concepts (`DELTA_ACCURACY`, `UNDECLARED_SEMANTIC_CHANGE`) do not naturally apply to a root with no parent/child delta. See §9A for the full ROOT_ENVELOPE adjudication design.
 
-> *"Does the submitted Intent Envelope faithfully represent the declared governance objective, beneficiary class, resource type, and essential constraints of the frozen root proposal, based only on the frozen submitted evidence?"*
+If the envelope is `FAITHFUL`, it is frozen and forks may be created against it. If `NOT_FAITHFUL`, the envelope may be resubmitted (fresh case, fresh bond) or the root proposal is left with `envelope_status = REJECTED`. If `UNCLEAR_VERDICT`, the envelope may be resubmitted with additional evidence.
 
-If the envelope is `FAITHFUL`, it is frozen and forks may be created against it. If `NOT_FAITHFUL`, the envelope may be resubmitted (fresh case, fresh bond) or the root proposal is left with `envelope_status = REJECTED`.
-
-Envelope challenges are supported and use the same challenge grounds as fork challenges.
+Envelope challenges are supported and target a distinct bounded ground-code enum drawn from the ROOT_ENVELOPE dimensions (§15).
 
 ---
 
@@ -236,6 +234,50 @@ The gate is computed by the deterministic validator, not the model. The model re
 
 ---
 
+## 9A. ROOT_ENVELOPE Adjudication (Distinct From Fork Adjudication)
+
+Root envelope adjudication is a **separate** adjudicative product from fork adjudication. It uses a distinct question, a distinct dimension enum, a distinct prompt template, a distinct output schema, distinct deterministic-validator rules, distinct verdict history, and distinct tests. The only reuse is infrastructure (evidence freeze, case freeze, verdict gate mechanism, bond capture, challenge machinery).
+
+### 9A.1 Exact Question
+
+> *"Given the frozen authoritative root-proposal evidence set V and the submitter's proposed Intent Envelope E, does E faithfully and sufficiently represent the material objective, beneficiary/resource scope, essential constraints, and mutable/immutable dimension classification expressed by the frozen root-proposal evidence, considering ONLY V? Do not consider popularity, bond size, submitter identity, or evidence outside V."*
+
+### 9A.2 ROOT_ENVELOPE Dimension Enum (Smallest Useful Set)
+
+| # | Dimension | Purpose |
+|---|---|---|
+| 1 | `OBJECTIVE_REPRESENTATION` | Does `envelope.objective` faithfully represent the governance objective in V? |
+| 2 | `SCOPE_FIDELITY` | Do `envelope.beneficiary_class`, `envelope.resource_type`, and `envelope.scope` match what V actually specifies? |
+| 3 | `CONSTRAINT_COMPLETENESS` | Are the essential constraints in V present in `envelope.essential_constraints`? No fabricated constraints and no material omissions. |
+| 4 | `DIMENSION_CLASSIFICATION` | Is the split into `mutable_dimensions` and `immutable_dimensions` defensible given V? |
+| 5 | `EVIDENCE_SUPPORT` | Does V actually cover the objective / scope / constraints claimed? |
+| 6 | `SOURCE_AUTHORITY` | Are the cited sources authoritative for the root proposal? |
+
+Six dimensions. Each scored `SATISFIED / NOT_SATISFIED / UNCLEAR`. Fork dimensions (`INTENT_PRESERVATION`, `DELTA_ACCURACY`, `UNDECLARED_SEMANTIC_CHANGE`, `TEMPORAL_RELEVANCE`, `INTERNAL_CONSISTENCY`) are **not** used here — the ROOT_ENVELOPE task has no parent, no delta, and no temporal comparison window. `TEMPORAL_RELEVANCE` and `INTERNAL_CONSISTENCY` were both considered and rejected: temporal relevance is subsumed by `EVIDENCE_SUPPORT` (the evidence must be for the specific root proposal), and internal consistency at envelope level is either subsumed by the other five dimensions or is a structural schema violation caught by the deterministic pre-check.
+
+### 9A.3 Deterministic Verdict Gate (ROOT_ENVELOPE)
+
+- If `OBJECTIVE_REPRESENTATION == NOT_SATISFIED` **or** `SCOPE_FIDELITY == NOT_SATISFIED` **or** `CONSTRAINT_COMPLETENESS == NOT_SATISFIED` → `NOT_FAITHFUL`.
+- Else if `DIMENSION_CLASSIFICATION == NOT_SATISFIED` **or** `EVIDENCE_SUPPORT == NOT_SATISFIED` **or** `SOURCE_AUTHORITY == NOT_SATISFIED` → `NOT_FAITHFUL`.
+- Else if any dimension is `UNCLEAR` → `UNCLEAR_VERDICT`.
+- Else all six `SATISFIED` → `FAITHFUL`.
+- Malformed model output → `INVALID`.
+
+### 9A.4 Explicit Separation Guarantees
+
+| Concern | Fork adjudication | ROOT_ENVELOPE adjudication |
+|---|---|---|
+| Prompt template | `PROMPT_FORK_V1` | `PROMPT_ROOT_ENVELOPE_V1` |
+| Output schema JSON key set | `{fork_id, verdict, dimensions: [7×...], reasoning}` | `{root_id, verdict, dimensions: [6×...], reasoning}` |
+| Deterministic validator | expects 7 dimensions, checks `delta_fingerprint`, `parent_envelope_fingerprint` | expects 6 dimensions, checks `envelope_fingerprint` and `root_body_fingerprint` |
+| Verdict history storage | `fork.verdict_history[]` | `root.envelope_verdict_history[]` |
+| Challenge grounds | fork challenge enum (§15) | root-envelope challenge enum (§15A) |
+| Tests | fork-specific | envelope-specific |
+
+The two products never share a prompt, never share a validator branch, never write into each other's history.
+
+---
+
 ## 10. Fetch Web Content — Verified Pattern
 
 ### 10.1 What the current official docs assert
@@ -263,9 +305,12 @@ Source: `https://docs.genlayer.com/developers/intelligent-contracts/examples/fet
 | Capability | Status |
 |---|---|
 | `from genlayer import *`, `@gl.public.view`, `@gl.public.write`, `@gl.public.write.payable` | **CONFIRMED CURRENT OFFICIAL DOCS** |
-| `gl.nondet.web.get`, `gl.nondet.web.render(url, mode, wait_after_loaded)` | **CONFIRMED CURRENT OFFICIAL DOCS** |
-| `gl.eq_principle.strict_eq`, `gl.eq_principle.prompt_comparative`, `gl.eq_principle.prompt_non_comparative` | **CONFIRMED CURRENT OFFICIAL DOCS** |
-| `gl.nondet.exec_prompt` | **CONFIRMED CURRENT OFFICIAL DOCS** |
+| `gl.nondet.web.get`, `gl.nondet.web.render(url, mode, wait_after_loaded)` — the API surface exists | **CONFIRMED CURRENT OFFICIAL DOCS** |
+| `gl.eq_principle.strict_eq`, `gl.eq_principle.prompt_comparative`, `gl.eq_principle.prompt_non_comparative` — the API surface exists | **CONFIRMED CURRENT OFFICIAL DOCS** |
+| `gl.nondet.exec_prompt` — the API surface exists | **CONFIRMED CURRENT OFFICIAL DOCS** |
+| **Bit-exact `strict_eq` consensus over `web.render(url, "text")` output for arbitrary rich governance pages** | **NOT LIVE VERIFIED for Governance Fork** — the API/pattern is documented; robustness for our specific target sources is a Stage 6a live-probe requirement. See §10.4. |
+| **Semantic consensus via `prompt_comparative` over frozen envelope + delta + fork body + up to 16 × 16 KiB evidence slices** | **NOT LIVE VERIFIED for Governance Fork** — API confirmed; the specific prompt scale + schema-conformance behavior under consensus must be probed in Stage 7 dry-run. |
+| **`Undetermined` behavior under realistic load and rich content** | **NOT LIVE VERIFIED for Governance Fork** — API acknowledges the outcome exists; frequency and retry behavior for our workload is a Stage 6a probe target. |
 | Storage types `u32`, `u64`, `bigint`, `bool`, `str`, `bytes`, `Address`, `DynArray[T]`, `TreeMap[K, V]` | **CONFIRMED CURRENT OFFICIAL DOCS** |
 | `@allow_storage` + `@dataclass` for custom storage classes | **CONFIRMED CURRENT OFFICIAL DOCS** |
 | `@gl.public.write.payable` accepts incoming value | **CONFIRMED CURRENT OFFICIAL DOCS** |
@@ -275,7 +320,40 @@ Source: `https://docs.genlayer.com/developers/intelligent-contracts/examples/fet
 | Static lint tool `genvm-lint check` | **CONFIRMED CURRENT OFFICIAL DOCS** |
 | Studio schema-load gotchas (long leading comment blocks, non-ASCII bytes, typed `__init__`) | **LIVE VERIFIED ELSEWHERE** (my prior Continuum / Treasury Trial work). Applied preemptively to V1. |
 
-Nothing in Stage 1 silently promotes an `UNKNOWN` to an implementation assumption. The two `UNKNOWN` / not-live-verified items (native GEN read/send APIs) are called out again in §16 and become explicit blockers for Stage 10.
+Nothing in Stage 1 silently promotes an `UNKNOWN` or `NOT LIVE VERIFIED` item to an implementation assumption. The four `NOT LIVE VERIFIED` / `DOCUMENTED BUT NOT LIVE VERIFIED` / `UNKNOWN` items above are hard blockers on their respective downstream stages (§10.4, §16, Stage 10).
+
+### 10.4 Mandatory Stage 6a Live Web-Render Capability Probe
+
+**No production adjudication may depend on `strict_eq(web.render(...))` behavior until this probe passes.** Stage 6 halts if the probe fails; Stage 7 does not start until Stage 6a produces a signed-off probe report.
+
+**Probe corpus (at least one URL per class):**
+
+- Snapshot-style governance proposal page
+- Tally / on-chain governance interface page (if renderable via `web.render`)
+- DAO governance forum thread page
+- Official DAO documentation page
+- Official treasury / budget report page
+
+**Probe measurements (per URL, per class):**
+
+1. **Successful render.** `gl.nondet.web.render(url, "text")` returns a non-empty string within a reasonable bound.
+2. **Useful extracted text.** The returned text actually contains the governance-relevant content — not just navigation chrome, cookie banners, or JS-shell placeholders.
+3. **Repeatability.** Successive calls to the same URL within a bounded window return the same slice (post-truncation to `MAX_EVIDENCE_SLICE = 16 KiB`).
+4. **Consensus behavior.** `gl.eq_principle.strict_eq(fetch_fn)` reaches consensus across validators without falling to `Undetermined` on a fresh, stable page.
+5. **`Undetermined` behavior.** How does the system behave when validators disagree (e.g. minor DOM drift)? Does the case remain safely `ADJUDICATING`? Does `retry_adjudication` recover?
+6. **Content bounds.** Post-slice content is deterministic; the `content_fingerprint` we compute matches across attempts.
+7. **Failure / unavailable-page behavior.** 404, 5xx, timeouts, DNS failures — how does `web.render` propagate them? Is it a rejected consensus, an `Undetermined`, or a caught exception? Governance Fork's freeze pathway must handle each observed mode deterministically.
+
+**Pass criteria:**
+
+- ≥ 4 of 5 URL classes render usable text under `strict_eq` consensus in stable form.
+- Repeatability holds within a bounded time window (probe report defines the window).
+- `Undetermined` and failure modes are all observed and mapped to documented contract states (`EVIDENCE_FREEZE_FAILED`, `RETRY_ELIGIBLE`, `TERMINAL`).
+- No probe target requires a workaround outside the documented `gl.nondet.web.*` and `gl.eq_principle.*` surface.
+
+**Fail response:** If pass criteria are not met, Stage 6 stops. **Do not invent a workaround.** Options are: (a) reduce the probe corpus and restrict production use to the subset that works (documented in Portal copy), (b) accept `prompt_comparative` over rendered content as the freeze mechanism instead of `strict_eq` (weaker deterministic guarantee, must be reassessed against V1's honesty story), or (c) pause the project and reassess with the user.
+
+The Stage 6a probe report is a stage deliverable and is committed to `docs/STAGE_6A_WEB_RENDER_PROBE_REPORT.md`.
 
 ---
 
@@ -416,6 +494,24 @@ A fork is finalized when either (a) its challenge window elapses with no open ch
 
 ---
 
+## 15A. ROOT_ENVELOPE Challenge Grounds (Distinct Enum)
+
+Envelope challenges use a **separate** ground-code enum aligned with the ROOT_ENVELOPE dimensions:
+
+```
+OBJECTIVE_MISREPRESENTED       # envelope objective does not match V
+SCOPE_MISCHARACTERIZED         # beneficiary_class / resource_type / scope wrong
+CONSTRAINT_INCOMPLETE          # essential constraint omitted or fabricated
+DIMENSION_MISCLASSIFIED        # mutable/immutable split indefensible under V
+ENVELOPE_SOURCE_AUTHORITY_ERROR
+ENVELOPE_EVIDENCE_SUPPORT_ERROR
+ENVELOPE_MALFORMED_ADJUDICATION
+```
+
+Same bond size, same challenge window, same one-open-at-a-time rule as fork challenges. Envelope verdicts live in `root.envelope_verdict_history[]` and never write into a fork's verdict history.
+
+---
+
 ## 16. Native GEN Economics
 
 **Design principle:** bonds create accountability for spam and for adjudicative misrepresentation. Bonds MUST NOT create accountability for honest political disagreement. A community member proposing an alternative should not fear losing a large stake merely because their fork is semantically bounded but politically unpopular.
@@ -426,25 +522,38 @@ A fork is finalized when either (a) its challenge window elapses with no open ch
 - `ENVELOPE_BOND` for root-envelope adjudication (same size).
 - `CHALLENGE_BOND` equal to `FORK_CREATION_BOND`.
 
-**Disposition table:**
+**Governing principle (revised).** `INVALID` may represent structural, adjudication, or protocol failure that is not attributable to malicious behavior by the bonded participant. Slashing on `INVALID` overloads a failure mode with a punishment intent, which is incorrect. Objectively malformed user submissions should preferably be rejected **deterministically at freeze time** — before any bond becomes exposed to semantic adjudication. Attributable slashable misconduct is defined separately (see §16.2), not by piggybacking on `INVALID`.
+
+**Disposition table (revised):**
 
 | Finalized Verdict | Fork Creator Bond | Notes |
 |---|---|---|
 | `FAITHFUL` | Refund 100% | The fork was inside the envelope. |
-| `NOT_FAITHFUL` | Refund 50%, slash 50% to `TREASURY_ADDR` | Partial slash: penalizes undeclared changes and misrepresentation without punishing honest but unsuccessful alternatives. |
+| `NOT_FAITHFUL` | Refund 50%, slash 50% to `TREASURY_ADDR` | Partial slash retained for now, subject to later live/economic review. Penalizes undeclared changes and misrepresentation without punishing honest but unsuccessful alternatives. |
 | `UNCLEAR_VERDICT` | Refund 100% | GenLayer did not conclude; do not punish. |
-| `INVALID` | Slash 100% | Malformed or deceptive submissions only. |
+| `INVALID` | **Refund 100%** | `INVALID` may reflect structural/adjudication/protocol failure not attributable to the submitter. Do not punish. |
 
-Rationale for partial slash on `NOT_FAITHFUL`: the whole point of Governance Fork is to encourage proposing alternatives. Full slashing on any `NOT_FAITHFUL` verdict creates a chilling effect that undermines the primitive. A malicious actor pushing junk still pays through the anti-spam bond and the partial slash; an honest submitter whose fork was semantically over-reach still recovers half.
+Rationale for partial slash on `NOT_FAITHFUL`: the whole point of Governance Fork is to encourage proposing alternatives. Full slashing on any `NOT_FAITHFUL` verdict creates a chilling effect that undermines the primitive. A malicious actor pushing junk still pays through the anti-spam bond and the partial slash; an honest submitter whose fork was semantically over-reach still recovers half. This model itself is provisional and will be re-examined in Stage 10 (live economics) and post-launch based on observed activity.
 
-**Challenger disposition (same partial-slash logic):**
+**Challenger disposition (revised, same principle applied):**
 
 | Challenge Outcome | Challenger Bond |
 |---|---|
 | New verdict differs from prior verdict | Refund 100% + reward = 25% of prior fork creator's slashed portion. |
-| New verdict matches prior verdict | Refund 50%, slash 50% to `TREASURY_ADDR`. |
+| New verdict matches prior verdict | Refund 50%, slash 50% to `TREASURY_ADDR`. Partial slash retained subject to later review. |
+| Challenge adjudication returns `INVALID` | **Refund 100%.** Structural failure, not attributable misconduct. |
+| Challenge adjudication returns `UNCLEAR_VERDICT` | Refund 100%. GenLayer did not conclude. |
 
-**Hard rules:**
+### 16.2 Attributable Slashable Misconduct (Separate From `INVALID`)
+
+If a genuinely deterministic category of attributable misconduct is later required, it is defined separately and does **not** overload `INVALID`. V1 candidates (all deterministically detectable, none dependent on semantic adjudication):
+
+- `SUBMISSION_STRUCTURALLY_INVALID` — the submission fails the deterministic pre-checks (delta application mismatch, immutable-dimension mutation, referenced-parent fingerprint mismatch, evidence URL length overflow, etc.). **V1 handling: reject at freeze time before any bond is captured.** No slash, because no bond was ever locked.
+- `EVIDENCE_URL_UNFETCHABLE_AFTER_MAX_RETRIES` — deterministic outcome from the freeze pathway. **V1 handling: 100% refund** (the failure is protocol-level, not submitter misconduct). If Stage 6a's live probe reveals a pattern of intentional junk-URL griefing at scale, a small `SPAM_URL_PENALTY` may be added in a later stage — that decision is not made in V1.
+
+V1 therefore has exactly two slash conditions, both semantic-adjudication verdicts: fork creator on `NOT_FAITHFUL`, challenger on unchanged verdict. Every other terminal state refunds 100%.
+
+### 16.3 Hard Rules (Unchanged)
 
 - Bond amount MUST NOT appear anywhere in the adjudication prompt.
 - Bond payout destination is fixed (`fork.creator` for refund, `TREASURY_ADDR` for slash). **No caller-selected payout recipient.**
@@ -452,7 +561,7 @@ Rationale for partial slash on `NOT_FAITHFUL`: the whole point of Governance For
 - Refund + slash percentages MUST sum to exactly 100% per bond.
 - `TREASURY_ADDR` is set at contract deployment and immutable.
 
-### 16.2 Native GEN API — Status
+### 16.4 Native GEN API — Status
 
 Reading incoming value and outbound transfer of native GEN are the two remaining unknowns from §10.3. Stage 10 (native GEN economics) will:
 
@@ -641,23 +750,22 @@ No vague "ecosystem" claims.
 
 ## 25. Integration Potential
 
-**Bounded read methods** enable another interface to consume the tree without a custom indexer for basic use:
+**Bounded read methods** enable another interface to consume the tree without a custom indexer for basic use (see §33 for the full reduced ABI):
 
-- `get_root_proposal(root_id) → RootProposalView`
-- `get_intent_envelope(root_id) → IntentEnvelopeView`
-- `get_fork(fork_id) → ForkView`
-- `list_forks_of_parent(parent_id, cursor, limit) → PaginatedForkList`
-- `list_children(fork_id, cursor, limit) → PaginatedForkList`
-- `get_delta(fork_id) → DynArray[DeltaEntry]`
-- `get_fork_verdict(fork_id) → VerdictView`
-- `get_fork_verdict_history(fork_id, cursor, limit) → PaginatedVerdictList`
-- `list_evidence(case_id, cursor, limit) → PaginatedEvidenceList`
-- `get_evidence(evidence_id) → EvidenceView`
-- `list_challenges(fork_id, cursor, limit) → PaginatedChallengeList`
-- `get_finality(fork_id) → FinalityView`
-- `get_bond_disposition(fork_id) → BondDispositionView`
+- `get_root_proposal(root_id)` — includes the envelope inline
+- `get_fork(fork_id)` — includes body, delta, and current verdict inline
+- `list_forks_of_root(root_id, cursor, limit)`
+- `list_forks_of_parent(parent_id, cursor, limit)` — parent may be a root or a fork
+- `get_verdict_history(target_id, target_kind, cursor, limit)` — unified over fork + envelope verdicts
+- `list_evidence_of_case(case_id, cursor, limit)`
+- `get_evidence(evidence_id)`
+- `list_challenges(target_id, target_kind, cursor, limit)` — unified over fork + envelope challenges
+- `get_finality(target_id, target_kind)`
+- `get_bond(bond_id)` — includes disposition state
+- `list_bonds_of_target(target_id, target_kind, cursor, limit)`
+- `get_constants()`
 
-All lists are paginated with `cursor` (u64) and `limit` (u8 ≤ 50).
+All lists are paginated with `cursor` (u64) and `limit` (u32 ≤ 50). Full tree reconstruction is possible from `get_root_proposal` + `list_forks_of_parent` + `get_fork` alone.
 
 ---
 
@@ -810,33 +918,69 @@ Nothing `UNKNOWN` has been silently upgraded to an assumption.
 
 ---
 
-## 33. Proposed ABI
+## 33. Proposed ABI (Revised — Reduced Method Count)
 
-### 33.1 Write Methods
+Following Stage 1 review, the ABI is reduced from the original 37-method surface without harming Proposal Tree rendering, evidence traceability, challenge traceability, integration utility, or safe write lifecycle. Rationale for each cut is in §33.3.
+
+### 33.1 Write Methods (12)
 
 | Method | Caller | Payable | Purpose |
 |---|---|---|---|
 | `register_dao(name, url) -> u64` | any | no | Registers a DAO record; returns `dao_id`. |
-| `import_root_proposal(dao_id, external_proposal_id, title, proposal_url, structured_parameters) -> u64` | any | no | Freezes root proposal and its body fingerprint via `gl.nondet.web.render(proposal_url, "text")`. |
+| `import_root_proposal(dao_id, external_proposal_id, title, proposal_url, structured_parameters) -> u64` | any | no | Freezes root proposal + body fingerprint via `gl.nondet.web.render`. |
 | `submit_root_envelope(root_id, envelope, evidence_urls, temporal_markers) -> u64` | any | payable (`ENVELOPE_BOND`) | Opens envelope adjudication case. |
-| `freeze_evidence(evidence_id)` | any | no | Fetches the URL, computes content fingerprint, marks frozen. |
-| `adjudicate_envelope(case_id)` | any | no | Runs envelope adjudication via `gl.eq_principle.prompt_comparative`. |
-| `create_fork(parent_id, parent_fingerprint, delta, resulting_body) -> u64` | any | payable (`FORK_CREATION_BOND`) | Creates a fork against a `FINALIZED_FAITHFUL` parent; runs deterministic delta-application pre-check. |
+| `create_fork(parent_id, parent_fingerprint, delta, resulting_body) -> u64` | any | payable (`FORK_CREATION_BOND`) | Creates a fork against a `FINALIZED_FAITHFUL` parent (or a `ENVELOPE_FAITHFUL` root); runs deterministic delta-application pre-check. |
 | `submit_fork_evidence(fork_id, evidence_urls, evidence_classes, relevance_claims, authority_claims, temporal_markers) -> u64` | fork creator only | no | Opens fork adjudication case. |
-| `freeze_case(case_id)` | any | no | Freezes the entire case fingerprint (envelope, delta, evidence set). |
-| `adjudicate_fork(case_id)` | any | no | Runs fork adjudication. |
+| `freeze_evidence(evidence_id)` | any | no | Fetches the URL, computes content fingerprint, marks frozen. Called once per evidence item. |
+| `freeze_case(case_id)` | any | no | Freezes the entire case fingerprint (envelope, delta, evidence set). Requires all evidence in the case to already be frozen. |
+| `adjudicate(case_id)` | any | no | **Unified adjudication entry point.** Dispatches by `case.case_type ∈ {ROOT_ENVELOPE, FORK, CHALLENGE}` to the correct prompt template and output schema. Replaces the three previous `adjudicate_envelope` / `adjudicate_fork` / `adjudicate_challenge` methods. |
 | `retry_adjudication(case_id)` | any | no | After `RETRY_COOLDOWN`; max 3. |
-| `challenge_verdict(fork_id, ground_code, argument) -> u64` | any | payable (`CHALLENGE_BOND`) | Opens challenge case. |
-| `adjudicate_challenge(case_id)` | any | no | Runs challenge adjudication. |
-| `finalize_fork(fork_id)` | any | no | After challenge window closes with no open challenge; triggers bond disposition. |
-| `settle_bond(fork_id)` | any | no | Idempotent; pays out per §16. |
-| `pause()` / `unpause()` | `TREASURY_ADDR` only | no | Emergency pause; only blocks new writes. |
+| `challenge_verdict(target_id, target_kind, ground_code, argument) -> u64` | any | payable (`CHALLENGE_BOND`) | Opens challenge case against a fork verdict or an envelope verdict. `target_kind ∈ {FORK, ROOT_ENVELOPE}` selects the ground-code enum. |
+| `finalize(target_id, target_kind)` | any | no | After challenge window closes with no open challenge; triggers bond disposition. Works for both fork and envelope targets. |
+| `settle_bond(bond_id)` | any | no | Idempotent; pays out per §16. Guarded by `bond.settled`. |
 
-### 33.2 View Methods
+Plus admin: `pause()`, `unpause()` — `TREASURY_ADDR` only. Counted separately below.
 
-All are `@gl.public.view`, bounded return, paginated where applicable.
+### 33.2 View Methods (18)
 
-`get_dao`, `list_daos`, `get_root_proposal`, `list_root_proposals_by_dao`, `get_intent_envelope`, `get_fork`, `list_forks_of_root`, `list_forks_of_parent`, `list_children`, `get_delta`, `get_fork_body`, `get_fork_verdict`, `get_fork_verdict_history`, `list_evidence`, `get_evidence`, `list_challenges`, `get_challenge`, `get_finality`, `get_bond_disposition`, `get_case`, `get_constants` (all storage caps and bond amounts), `get_pause_state`.
+All are `@gl.public.view`, bounded return, paginated where applicable via `(cursor: u64, limit: u32)`.
+
+- `get_dao(dao_id) -> DaoView`
+- `list_daos(cursor, limit) -> PaginatedDaoList`
+- `get_root_proposal(root_id) -> RootProposalView` — includes the current `envelope` and `envelope_status` inline (envelope is not a separate endpoint; it lives on the root)
+- `list_root_proposals_by_dao(dao_id, cursor, limit) -> PaginatedRootList`
+- `get_fork(fork_id) -> ForkView` — includes `body`, `delta`, and `current_verdict` inline; obsoletes previous separate `get_fork_body` and `get_delta` reads
+- `list_forks_of_root(root_id, cursor, limit) -> PaginatedForkList`
+- `list_forks_of_parent(parent_id, cursor, limit) -> PaginatedForkList` — takes either a root_id or a fork_id as parent; obsoletes previous `list_children`
+- `get_verdict_history(target_id, target_kind, cursor, limit) -> PaginatedVerdictList` — unified over fork verdicts and envelope verdicts; obsoletes previous `get_fork_verdict_history`
+- `get_evidence(evidence_id) -> EvidenceView`
+- `list_evidence_of_case(case_id, cursor, limit) -> PaginatedEvidenceList`
+- `get_case(case_id) -> CaseView` — retained because integration frontends need the frozen fingerprints and case_type
+- `get_challenge(challenge_id) -> ChallengeView`
+- `list_challenges(target_id, target_kind, cursor, limit) -> PaginatedChallengeList` — unified over fork and envelope targets
+- `get_finality(target_id, target_kind) -> FinalityView`
+- `get_bond(bond_id) -> BondView` — includes disposition state; obsoletes previous separate `get_bond_disposition`
+- `list_bonds_of_target(target_id, target_kind, cursor, limit) -> PaginatedBondList`
+- `get_constants() -> ConstantsView` — every cap, window, and bond amount
+- `get_pause_state() -> PauseView`
+
+### 33.3 Reduction Summary
+
+| Before | After | Cut | Reason |
+|---|---|---|---|
+| `adjudicate_envelope` + `adjudicate_fork` + `adjudicate_challenge` (3) | `adjudicate(case_id)` (1) | −2 | Case knows its own `case_type`. Dispatch happens inside the method against distinct prompt templates and output schemas (§9A.4). Fewer surface areas, no loss of separation. |
+| `finalize_fork` (fork-only) | `finalize(target_id, target_kind)` (unified) | 0 | Same method count but reused for envelope finalization, avoiding a `finalize_envelope` addition. |
+| `get_fork_body` + `get_delta` + `get_fork` (3) | `get_fork(fork_id)` (1) | −2 | Fork body and delta are already bounded and small; folding them into `get_fork` reduces integrator round-trips. |
+| `get_intent_envelope` (root-only) | folded into `get_root_proposal` | −1 | Envelope lives on the root; separate view was redundant. |
+| `list_children` (fork parent only) | `list_forks_of_parent` (accepts root or fork parent) | −1 | Single method, both parent kinds. |
+| `get_fork_verdict` + `get_fork_verdict_history` (2) | `get_verdict_history(target_id, target_kind, ...)` (1) | −1 | Latest verdict is index 0 of the history — no need for a dedicated method. Also naturally unifies over envelope + fork verdicts. |
+| `get_bond_disposition` (fork-only, terminal state) | folded into `get_bond(bond_id)` + `list_bonds_of_target` | 0 net | Bond identity and disposition are one concept; unified over targets. |
+
+**Total: previous 15 write + 22 view = 37 methods → new 12 write + 18 view = 30 methods (+ 2 admin = 32 counted with pause/unpause).**
+
+Nothing lost from the Portal / integrator surface: full Proposal Tree walk still supported (`list_root_proposals_by_dao` → `list_forks_of_root` / `list_forks_of_parent` → `get_fork`); every verdict, challenge, evidence item, and bond is reachable in a bounded read; the whole tree can be reconstructed from `get_root_proposal` + `list_forks_of_parent` + `get_fork` alone.
+
+### 33.4 Validation Rules Applied To Every Write
 
 ### 33.3 Validation Rules Applied To Every Write
 
@@ -917,13 +1061,17 @@ OPEN
     → INVALID                  → challenger partial slash
 ```
 
-### 34.6 Bond
+### 34.6 Bond (Revised)
 
 ```
 BONDED
   → SETTLEMENT_PENDING
-    → SETTLED (idempotent; guarded by bond.settled flag)
+    → SETTLED_FULL_REFUND        (verdict ∈ {FAITHFUL, UNCLEAR_VERDICT, INVALID}, or challenger with same set)
+    → SETTLED_PARTIAL_SLASH      (verdict == NOT_FAITHFUL, or challenger with unchanged verdict)
+    → SETTLED_CHALLENGER_REWARD  (challenger whose challenge flipped the verdict; refund + reward)
 ```
+
+Every terminal state is guarded by `bond.settled: bool` (idempotency). No `SETTLED_FULL_SLASH` transition exists in V1 — slashing is bounded to the 50% partial-slash path only. `INVALID` and structural-protocol failures always route to `SETTLED_FULL_REFUND`.
 
 ---
 
@@ -1064,12 +1212,13 @@ No dual-reward optimization.
 | Stage | Deliverable | Notes |
 |---|---|---|
 | 1 | Architecture & audit | **This document.** No code, no deploy. |
-| 2 | Contract scaffold, storage layout, ABI signatures | Empty method bodies with type signatures and validation stubs. |
+| 2 | **Compilable contract shell + schema gate** | Source header/runtime compatibility, imports, enums, bounded storage primitives, ID strategy, DAO/root/tree indexes, minimal core record dataclasses, pagination convention, pause/config skeleton, and ABI reflected in the doc only. **No business logic. No `gl.nondet.*`. No web retrieval. No native GEN settlement. No per-method placeholder bodies for the sake of ABI parity.** Deliverable: `genvm-lint check` passes; `genlayer-studio` loads schema. See §40.1 for the full Stage 2 exclusion list. |
 | 3 | DAO / root proposal / Intent Envelope | Import + fingerprint + envelope schema. |
 | 4 | Branching fork model + delta pre-check | Structural invariants + deterministic delta application. |
 | 5 | Evidence architecture | Evidence records, freeze pathway, dedup. |
 | 6 | Official web retrieval | `gl.nondet.web.render` inside `gl.eq_principle.strict_eq`. |
-| 7 | GenLayer adjudication | Envelope + fork + challenge adjudication with `prompt_comparative`. |
+| **6a** | **Live web-render capability probe** | **Blocker on Stage 7.** Runs probe corpus of §10.4, produces `docs/STAGE_6A_WEB_RENDER_PROBE_REPORT.md`. Fail response is documented in §10.4; no workarounds invented. |
+| 7 | GenLayer adjudication | Envelope + fork + challenge adjudication with `prompt_comparative`. Two distinct prompt templates and two distinct output schemas (fork adjudication vs ROOT_ENVELOPE adjudication). |
 | 8 | Deterministic validator | Schema, fingerprint, verdict-gate checks. |
 | 9 | Challenge system | Grounds, bond capture, replacement verdict, history. |
 | 10 | Native GEN economics | **Live-verify** value read/send APIs; partial-slash logic. |
@@ -1088,6 +1237,37 @@ No dual-reward optimization.
 Sequencing rationale: contract shape (2–4) before economics (10); evidence (5–6) before adjudication (7–8); adjudication before challenge (9); everything on-chain before frontend (16); manual user deployment (14) before any live verification (15).
 
 **Claude will NOT auto-deploy the production Intelligent Contract at any stage.** The user signs the deployment tx themselves.
+
+### 40.1 Stage 2 Detailed Scope (Compilable Shell + Schema Gate)
+
+**Stage 2 is a scaffold/schema gate, not an incomplete implementation.** Its purpose is to prove the contract shell is compatible with the current runtime and schema loader, and to freeze the storage/index/dataclass shapes so subsequent stages can build on them without churn.
+
+**Stage 2 delivers, in `contracts/governance_fork.py`:**
+
+- Correct file header (`# { "Depends": "py-genlayer:..." }`) matching the current SDK.
+- `from genlayer import *` and the class extending `gl.Contract`.
+- No leading comment wall (schema-load gotcha). ASCII-only source. No `__init__(self) -> None` annotation.
+- All V1 enums declared (`EvidenceClass`, `ClaimKind`, `ResourceType`, `ForkStatus`, `CaseType`, `VerdictStatus`, `ChallengeGround`, `EnvelopeChallengeGround`, `BondSettlementKind`).
+- All V1 dataclasses declared (`IntentEnvelope`, `DeltaEntry`, `ForkBody`, `Evidence`, `Case`, `Challenge`, `Bond`, `RootProposal`, `Fork`, `VerdictRecord`, `EnvelopeVerdictRecord`, `Dao`, `ParamKV`) with correct type annotations, bounded string caps documented in comments only where non-obvious.
+- Storage layout on the contract class: `daos: TreeMap[u64, Dao]`, `roots: TreeMap[u64, RootProposal]`, `forks: TreeMap[u64, Fork]`, `evidence: TreeMap[u64, Evidence]`, `cases: TreeMap[u64, Case]`, `challenges: TreeMap[u64, Challenge]`, `bonds: TreeMap[u64, Bond]`, plus ID counters and index maps required for tree walks (`forks_by_parent: TreeMap[u64, DynArray[u64]]`, `forks_by_root: TreeMap[u64, DynArray[u64]]`, `roots_by_dao: TreeMap[u64, DynArray[u64]]`, `evidence_by_case: TreeMap[u64, DynArray[u64]]`, `challenges_by_fork: TreeMap[u64, DynArray[u64]]`).
+- ID strategy: monotonic `u64` counter per entity (`next_dao_id`, `next_root_id`, `next_fork_id`, `next_evidence_id`, `next_case_id`, `next_challenge_id`, `next_bond_id`).
+- Pagination convention: every list view accepts `(cursor: u64, limit: u32)`, `limit` clamped to `PAGINATION_LIMIT_MAX = 50`, returns `(items: DynArray[T], next_cursor: u64)`.
+- Constants block: `MAX_DEPTH_PER_ROOT`, `MAX_CHILDREN_PER_PARENT`, `MAX_TOTAL_FORKS_PER_ROOT`, `MAX_EVIDENCE_PER_CASE`, `MAX_CHALLENGES_PER_FORK`, `MAX_EVIDENCE_SLICE`, plus every bond amount / window as `bigint` / `u64`.
+- Pause / config skeleton: `paused: bool`, `treasury_addr: Address`, deploy-time initialization in the constructor.
+- One ABI signature declared per method on the reduced list of §33 with `raise NotImplementedError("stage-N")` in the body — no partial logic, no half-validation. This lets `genvm-lint check` verify the ABI shape without pretending logic exists.
+
+**Stage 2 explicitly does NOT:**
+
+- Implement any business logic.
+- Implement any nondeterministic adjudication.
+- Call `gl.nondet.*` anywhere.
+- Implement web retrieval or the freeze pathway.
+- Implement native GEN settlement or any bond math.
+- Attempt to compute fingerprints beyond a placeholder that raises `NotImplementedError`.
+- Add placeholder method bodies that mimic real behavior for the sake of ABI parity — an empty ABI shell is preferred to a fake one.
+- Deploy or broadcast anything.
+
+**Stage 2 pass criteria:** `genvm-lint check` passes clean; the contract loads in Studio without a schema error; every ABI method appears in the exported schema.
 
 ---
 
