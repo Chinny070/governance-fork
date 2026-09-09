@@ -92,7 +92,21 @@ No failed row omitted. Row 6's `Undetermined` and row 12's `Contract Error` are 
 | 8 | `content_length=0`, `fingerprint=0xe3b0c442...52b855` | Confirmed — genuinely empty |
 | 9 | `content_length=6258`, `fingerprint=0x48bf9874...622f` | Confirmed |
 | 10 | Same fingerprint as 9 | Confirmed — repeatability |
-| NEGATIVE_CONTROL | **Not yet re-read.** `get_probe_count()` after this attempt has not been reported back. Expected (by strong analogy to the Undetermined case, and because `Contract Error` transactions are architecturally the same "raise before any storage write" pattern as every deterministic validation failure throughout Stages 3–5) to still read `10` — i.e., no state committed. **This is a genuine open item, not assumed as fact. Flagged in §44.** |
+| NEGATIVE_CONTROL | **Confirmed.** `get_probe_count()` re-read after this attempt returned `10` — identical to the count before the attempt. The `WEBPAGE_LOAD_FAILED` transaction did **not** allocate probe state. |
+
+### 16.1 Negative-control state check — resolved
+
+Observed sequence:
+
+1. `run_probe` on the negative-control URL called `gl.nondet.web.render(...)`, which raised `WEBPAGE_LOAD_FAILED` (HTTP 404).
+2. Consensus Result was **Accepted** (validators agreed on the failure itself — see §23, §27).
+3. No `ProbeResult` was committed for this attempt.
+4. `get_probe_count()` read `10` both before and after this transaction.
+5. Therefore, the failing write was **atomic** with respect to probe allocation/state: a `render()` failure that reaches an agreed (`Accepted`) consensus outcome still results in zero storage mutation when the contract's own code raises uncaught.
+
+This is a **separate, independently observed** atomicity case from SOURCE_3's diagnostic-wait attempt (§13–15, §22), where the mechanism was different: consensus itself failed to converge (`Undetermined`, 3 rotations) rather than converging on an agreed failure. Both paths were independently confirmed to result in zero committed state via direct `get_probe_count()` re-reads — but they are two distinct failure mechanisms, not one, and are recorded as such.
+
+**Live verified for the observed Stage 6a probe paths.** This report does not generalize to a claim that every possible `web.render()` failure mode behaves identically — only the two specific paths actually observed and confirmed here (an `Undetermined` consensus, and an agreed-`Accepted` consensus on a raised `WEBPAGE_LOAD_FAILED` exception) are covered by this finding.
 
 ## 17. Rendered lengths
 
@@ -246,7 +260,7 @@ Contingent on your review of this report and the one open item in §44:
 
 ## 44. Unresolved risks / open items
 
-- **Not yet confirmed:** `get_probe_count()` after the negative-control transaction. Expected (by strong analogy to the Undetermined case and by architectural consistency with every atomicity guarantee tested since Stage 3) to still read `10`, but this has not been empirically confirmed and is not asserted as fact. **Action needed:** run `get_probe_count()` once more and report back; I will update this report's §16 and §44 accordingly. This does not block the overall gate finding (§30), which does not depend on this specific number, but it is a loose end in the atomicity story worth closing.
+- **Resolved:** the negative-control atomicity check. `get_probe_count()` re-read after the `WEBPAGE_LOAD_FAILED` transaction returned `10` — unchanged from before the attempt. No probe state was allocated. See §16.1 for the full observed sequence and the explicit scope limit on this finding (live-verified only for the two specific failure paths actually observed in this probe — not generalized to every possible `web.render()` failure mode).
 - SOURCE_3_FORUM has no working configuration under the two tested variants (no-wait, `wait="5s"`). A longer wait (10s, 15s) was not tested — Stage 6b research could determine whether a longer wait resolves the instability, though the `Undetermined` (not merely "slow") nature of the failure suggests this may be a content-shape problem rather than a timing problem.
 - The `WEBPAGE_LOAD_FAILED` vs. silent-empty distinction (§33) is a real design gap not yet closed in any contract — Stage 6b must implement the catching logic, not just document the recommendation.
 - `hashlib` live-verification (§28) was performed in the isolated probe contract, not `contracts/governance_fork.py` itself — transferable evidence, not a byte-identical-file confirmation.
