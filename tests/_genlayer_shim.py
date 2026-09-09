@@ -97,6 +97,34 @@ class DynArray(list):
         return cls
 
 
+class _StorageNamespace:
+    """Shim for gl.storage. The live runtime forbids DynArray[T]()/
+    TreeMap[K, V]() direct instantiation by contract code (fixed memory
+    layout; see the "Live-runtime correction" comment at the top of
+    contracts/governance_fork.py) and requires
+    gl.storage.inmem_allocate(Type, *args, **kwargs) instead.
+
+    This shim's TreeMap/DynArray are plain dict/list subclasses with no
+    such restriction -- deliberately: existing test helpers across
+    tests/test_stage_*.py already call shim.DynArray([...]) directly to
+    build calldata-shaped inputs (simulating what the framework decodes
+    from an external call, which is a different, always-permitted code
+    path from a contract's own internal construction). Reproducing the
+    live restriction faithfully would require distinguishing those two
+    call paths, which this shim does not attempt. inmem_allocate here
+    is therefore a pass-through, present only so contract code written
+    against the real gl.storage.inmem_allocate API runs unchanged
+    locally -- it does NOT verify that direct DynArray[T]()/
+    TreeMap[K, V]() calls would fail live. That guarantee comes from
+    the contract source itself using inmem_allocate everywhere, not
+    from this shim catching a regression.
+    """
+
+    @staticmethod
+    def inmem_allocate(type_, *args, **kwargs):
+        return type_(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Decorators
 # ---------------------------------------------------------------------------
@@ -222,6 +250,7 @@ class _GLNamespace:
         self.Contract = _Contract
         self.mock_web = _MockWebRegistry()
         self.nondet = _NondetNamespace(self.mock_web)
+        self.storage = _StorageNamespace
         self.eq_principle = _EqPrincipleNamespace()
 
 

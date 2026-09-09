@@ -8,6 +8,29 @@ import hashlib
 
 
 # =========================================================================
+# Live-runtime correction: DynArray[T]() cannot be called directly.
+#
+# GenLayer's storage generics have a fixed memory layout and forbid direct
+# user instantiation (docs.genlayer.com/developers/intelligent-contracts
+# /storage) -- DynArray[T]() raises "TypeError: this class can't be
+# instantiated by user" at runtime. This was never caught by the local
+# test shim (tests/_genlayer_shim.py), whose DynArray is a plain `list`
+# subclass with no such restriction, and was never exercised live by the
+# Stage 6a probe either (its own DynArray[u256]() call sites, in
+# list_probes, were never actually invoked during Phase B testing). It
+# was first discovered live on this contract via a real
+# import_root_proposal transaction after the treasury-from-deployer
+# deploy fix.
+#
+# Every in-body construction of an empty DynArray[T] in this file uses
+# gl.storage.inmem_allocate(DynArray[T]) instead -- the documented,
+# sanctioned way to allocate a storage-generic value in memory (as
+# opposed to a persisted top-level storage field, which initializes
+# empty automatically and needs no allocation call at all).
+# =========================================================================
+
+
+# =========================================================================
 # Constants (bounded caps, immutable at deploy)
 # =========================================================================
 
@@ -1159,9 +1182,9 @@ class Contract(gl.Contract):
             beneficiary_class="",
             resource_type="",
             scope="",
-            essential_constraints=DynArray[str](),
-            mutable_dimensions=DynArray[str](),
-            immutable_dimensions=DynArray[str](),
+            essential_constraints=gl.storage.inmem_allocate(DynArray[str]),
+            mutable_dimensions=gl.storage.inmem_allocate(DynArray[str]),
+            immutable_dimensions=gl.storage.inmem_allocate(DynArray[str]),
             parent_proposal_fingerprint=b"",
             envelope_version=u32(0),
         )
@@ -1183,7 +1206,7 @@ class Contract(gl.Contract):
             imported_at=u256(0),
         )
         if dao_id not in self.roots_by_dao:
-            self.roots_by_dao[dao_id] = DynArray[u256]()
+            self.roots_by_dao[dao_id] = gl.storage.inmem_allocate(DynArray[u256])
         self.roots_by_dao[dao_id].append(root_id)
         self.import_fingerprint_index[fp_hex] = root_id
         self.next_root_id = u256(int(root_id) + 1)
@@ -1324,7 +1347,7 @@ class Contract(gl.Contract):
         # Allocate case
         case_id = self.next_case_id
         self.next_case_id = u256(int(case_id) + 1)
-        evidence_ids = DynArray[u256]()
+        evidence_ids = gl.storage.inmem_allocate(DynArray[u256])
         # Allocate evidence records
         for i in range(n_evi):
             evidence_id = self.next_evidence_id
@@ -1347,7 +1370,7 @@ class Contract(gl.Contract):
             )
             evidence_ids.append(evidence_id)
         if case_id not in self.evidence_by_case:
-            self.evidence_by_case[case_id] = DynArray[u256]()
+            self.evidence_by_case[case_id] = gl.storage.inmem_allocate(DynArray[u256])
         for eid in evidence_ids:
             self.evidence_by_case[case_id].append(eid)
         # Write the case
@@ -1515,10 +1538,10 @@ class Contract(gl.Contract):
             creator_bond_id=u256(0),
         )
         if resolved_root_id not in self.forks_by_root:
-            self.forks_by_root[resolved_root_id] = DynArray[u256]()
+            self.forks_by_root[resolved_root_id] = gl.storage.inmem_allocate(DynArray[u256])
         self.forks_by_root[resolved_root_id].append(fork_id)
         if parent_id not in self.forks_by_parent:
-            self.forks_by_parent[parent_id] = DynArray[u256]()
+            self.forks_by_parent[parent_id] = gl.storage.inmem_allocate(DynArray[u256])
         self.forks_by_parent[parent_id].append(fork_id)
         # Increment parent's child_count if parent is a fork
         if parent_kind == PARENT_KIND_FORK:
@@ -1676,7 +1699,7 @@ class Contract(gl.Contract):
                 target_id=fork_id,
                 target_kind=TARGET_KIND_FORK,
                 target_fingerprint=fork.body_fingerprint,
-                evidence_ids=DynArray[u256](),
+                evidence_ids=gl.storage.inmem_allocate(DynArray[u256]),
                 membership_fingerprint=b"",
                 retrieval_disposition_fingerprint=b"",
                 evidence_set_fingerprint=b"",
@@ -1690,9 +1713,9 @@ class Contract(gl.Contract):
                 creator_count=u32(0),
                 community_count=u32(0),
             )
-            self.evidence_by_case[case_id] = DynArray[u256]()
+            self.evidence_by_case[case_id] = gl.storage.inmem_allocate(DynArray[u256])
         # Allocate evidence records
-        new_ids = DynArray[u256]()
+        new_ids = gl.storage.inmem_allocate(DynArray[u256])
         for i in range(n):
             evidence_id = self.next_evidence_id
             self.next_evidence_id = u256(int(evidence_id) + 1)
@@ -1925,7 +1948,7 @@ class Contract(gl.Contract):
         else:
             raise gl.vm.UserError("unsupported case_type for seal")
 
-        eligible_ids = DynArray[u256]()
+        eligible_ids = gl.storage.inmem_allocate(DynArray[u256])
         for eid in case.evidence_ids:
             ev = self.evidence[eid]
             is_required = required_owner is None or ev.submitter == required_owner
@@ -2116,7 +2139,7 @@ class Contract(gl.Contract):
             limit_int = 1
         if limit_int > PAGINATION_LIMIT_MAX:
             limit_int = PAGINATION_LIMIT_MAX
-        items = DynArray[u256]()
+        items = gl.storage.inmem_allocate(DynArray[u256])
         i = start
         count = 0
         while i < total_next and count < limit_int:
@@ -2140,10 +2163,10 @@ class Contract(gl.Contract):
         if dao_id not in self.daos:
             raise gl.vm.UserError("dao not found")
         if dao_id not in self.roots_by_dao:
-            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+            return PageIds(items=gl.storage.inmem_allocate(DynArray[u256]), next_cursor=u256(0))
         arr = self.roots_by_dao[dao_id]
         picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
-        items = DynArray[u256]()
+        items = gl.storage.inmem_allocate(DynArray[u256])
         for v in picked:
             items.append(v)
         return PageIds(items=items, next_cursor=u256(nxt))
@@ -2161,10 +2184,10 @@ class Contract(gl.Contract):
         if root_id not in self.roots:
             raise gl.vm.UserError("root not found")
         if root_id not in self.forks_by_root:
-            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+            return PageIds(items=gl.storage.inmem_allocate(DynArray[u256]), next_cursor=u256(0))
         arr = self.forks_by_root[root_id]
         picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
-        items = DynArray[u256]()
+        items = gl.storage.inmem_allocate(DynArray[u256])
         for v in picked:
             items.append(v)
         return PageIds(items=items, next_cursor=u256(nxt))
@@ -2177,10 +2200,10 @@ class Contract(gl.Contract):
         if parent_id not in self.roots and parent_id not in self.forks:
             raise gl.vm.UserError("parent not found")
         if parent_id not in self.forks_by_parent:
-            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+            return PageIds(items=gl.storage.inmem_allocate(DynArray[u256]), next_cursor=u256(0))
         arr = self.forks_by_parent[parent_id]
         picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
-        items = DynArray[u256]()
+        items = gl.storage.inmem_allocate(DynArray[u256])
         for v in picked:
             items.append(v)
         return PageIds(items=items, next_cursor=u256(nxt))
@@ -2212,10 +2235,10 @@ class Contract(gl.Contract):
         if case_id not in self.cases:
             raise gl.vm.UserError("case not found")
         if case_id not in self.evidence_by_case:
-            return PageIds(items=DynArray[u256](), next_cursor=u256(0))
+            return PageIds(items=gl.storage.inmem_allocate(DynArray[u256]), next_cursor=u256(0))
         arr = self.evidence_by_case[case_id]
         picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
-        items = DynArray[u256]()
+        items = gl.storage.inmem_allocate(DynArray[u256])
         for v in picked:
             items.append(v)
         return PageIds(items=items, next_cursor=u256(nxt))
