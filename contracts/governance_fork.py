@@ -74,14 +74,17 @@ ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE = 1
 # judgment.
 MIN_USEFUL_CONTENT_LEN = 32
 
-# Case-level total frozen-content cap. PROVISIONAL: derived from Stage 6a's
-# largest single observed source (SOURCE_2_TALLY, 12955 chars, ~79% of the
-# 16384-char per-evidence bound) with roughly a 4x margin, giving headroom
-# for several rich evidence items per case without approaching the
-# theoretical worst case of 16 * 16384 = 262144 chars. Marked provisional;
-# revisit with a later live stress gate once Stage 6b sees real multi-
-# evidence cases at scale.
-MAX_FROZEN_CONTENT_PER_CASE = 65536
+# Stage 6b correction: a seal-blocking total-content cap was considered
+# and REMOVED. It would have made already-immutable, successfully fetched
+# evidence retroactively unsealable once the case's cumulative content
+# happened to cross an arbitrary threshold -- an unrecoverable dead end no
+# different in kind from the community-bricking defect this correction
+# fixes. The theoretical worst case is already finite and bounded without
+# any additional cap: MAX_EVIDENCE_PER_CASE (16) * MAX_EVIDENCE_SLICE
+# (16384) = 262144 chars per case. Stage 7's prompt-budget concerns (if
+# any) are a Stage 7 architecture problem -- bounded per-evidence excerpts,
+# staged evaluation, evidence-by-evidence findings -- not a Stage 6b
+# storage/freeze-integrity problem. Do not conflate the two.
 
 # Fixed, contract-controlled wait duration for RENDER_PROFILE_DYNAMIC.
 # Never caller-supplied -- Stage 6a's negative-control and instability
@@ -641,10 +644,33 @@ def _evidence_set_fingerprint(case_id_int, evidence_id_list, evidence_lookup):
     return _sha256(_canonicalize_evidence_set(case_id_int, evidence_id_list, evidence_lookup))
 
 
+def _canonicalize_retrieval_disposition(case_id_int, evidence_id_list, evidence_lookup):
+    # Binds the retrieval_status of EVERY submitted member (creator AND
+    # community, FETCHED/UNUSABLE_SHORT/NOT_FETCHED alike), in membership
+    # order. This is the complete, auditable disposition record -- it
+    # does NOT imply anything was included in adjudication; that is what
+    # evidence_set_fingerprint (over the adjudication-eligible subset
+    # only) is for. See docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md
+    # "submitted membership vs retrieved content vs adjudication input".
+    buf = b"gf-retrieval-disposition/v1\n"
+    buf = buf + b"case_id=" + str(case_id_int).encode("ascii") + b"\n"
+    buf = buf + b"items=\n"
+    for eid in evidence_id_list:
+        ev = evidence_lookup(eid)
+        buf = buf + b"  id:" + str(int(eid)).encode("ascii") + b"\n"
+        buf = buf + b"  status:" + ev.retrieval_status.encode("ascii") + b"\n"
+    return buf
+
+
+def _retrieval_disposition_fingerprint(case_id_int, evidence_id_list, evidence_lookup):
+    return _sha256(_canonicalize_retrieval_disposition(case_id_int, evidence_id_list, evidence_lookup))
+
+
 def _canonicalize_case_fork(
     case_id_int, adjudication_dims_version_int, fork_id_int,
     fork_body_fingerprint, root_id_int, root_import_fingerprint,
-    membership_fingerprint, evidence_set_fingerprint,
+    membership_fingerprint, retrieval_disposition_fingerprint,
+    evidence_set_fingerprint,
 ):
     buf = b"gf-case/v1\n"
     buf = buf + b"case_type=FORK\n"
@@ -655,6 +681,7 @@ def _canonicalize_case_fork(
     buf = buf + b"root_id=" + str(root_id_int).encode("ascii") + b"\n"
     buf = buf + b"root_import_fingerprint=" + _hex_of(root_import_fingerprint).encode("ascii") + b"\n"
     buf = buf + b"membership_fingerprint=" + _hex_of(membership_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"retrieval_disposition_fingerprint=" + _hex_of(retrieval_disposition_fingerprint).encode("ascii") + b"\n"
     buf = buf + b"evidence_set_fingerprint=" + _hex_of(evidence_set_fingerprint).encode("ascii") + b"\n"
     return buf
 
@@ -662,7 +689,7 @@ def _canonicalize_case_fork(
 def _canonicalize_case_root_envelope(
     case_id_int, adjudication_dims_version_int, root_id_int,
     root_import_fingerprint, envelope, membership_fingerprint,
-    evidence_set_fingerprint,
+    retrieval_disposition_fingerprint, evidence_set_fingerprint,
 ):
     # Binds the COMPLETE frozen envelope -- not just a subset -- since
     # Stage 7 adjudicates against the full envelope, including its
@@ -689,6 +716,7 @@ def _canonicalize_case_root_envelope(
         buf = buf + b"  " + d.encode("utf-8") + b"\n"
     buf = buf + b"envelope_version=" + str(int(envelope.envelope_version)).encode("ascii") + b"\n"
     buf = buf + b"membership_fingerprint=" + _hex_of(membership_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"retrieval_disposition_fingerprint=" + _hex_of(retrieval_disposition_fingerprint).encode("ascii") + b"\n"
     buf = buf + b"evidence_set_fingerprint=" + _hex_of(evidence_set_fingerprint).encode("ascii") + b"\n"
     return buf
 
@@ -836,6 +864,15 @@ class Case:
     # profile, submitter, class), before any content exists. Set by
     # close_evidence. Empty before close.
     membership_fingerprint: bytes
+    # Stage 6b correction: binds the retrieval_status of EVERY submitted
+    # member (creator and community alike), regardless of whether that
+    # member ended up adjudication-eligible. Set by seal_evidence. Empty
+    # before seal. See "submitted membership vs retrieved content vs
+    # adjudication input" in docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md.
+    retrieval_disposition_fingerprint: bytes
+    # Adjudication input set only (required evidence, always FETCHED by
+    # the seal gate, plus any non-required/community evidence that
+    # happened to reach FETCHED by seal time). NOT the full membership.
     evidence_set_fingerprint: bytes
     adjudication_dimensions_version: u32
     case_fingerprint: bytes
@@ -1300,6 +1337,7 @@ class Contract(gl.Contract):
             target_fingerprint=root.import_fingerprint,
             evidence_ids=evidence_ids,
             membership_fingerprint=b"",
+            retrieval_disposition_fingerprint=b"",
             evidence_set_fingerprint=b"",
             adjudication_dimensions_version=u32(ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE),
             case_fingerprint=b"",
@@ -1619,6 +1657,7 @@ class Contract(gl.Contract):
                 target_fingerprint=fork.body_fingerprint,
                 evidence_ids=DynArray[u256](),
                 membership_fingerprint=b"",
+                retrieval_disposition_fingerprint=b"",
                 evidence_set_fingerprint=b"",
                 adjudication_dimensions_version=u32(ADJUDICATION_DIMENSIONS_VERSION_FORK),
                 case_fingerprint=b"",
@@ -1737,6 +1776,7 @@ class Contract(gl.Contract):
             target_fingerprint=case.target_fingerprint,
             evidence_ids=case.evidence_ids,
             membership_fingerprint=membership_fp,
+            retrieval_disposition_fingerprint=case.retrieval_disposition_fingerprint,
             evidence_set_fingerprint=case.evidence_set_fingerprint,
             adjudication_dimensions_version=case.adjudication_dimensions_version,
             case_fingerprint=case.case_fingerprint,
@@ -1816,12 +1856,38 @@ class Contract(gl.Contract):
 
     @gl.public.write
     def seal_evidence(self, case_id: u256) -> None:
-        # Step 3 of Close -> Fetch -> Seal. Deterministic. Requires every
-        # member evidence item to have resolved to a terminal retrieval
-        # status (RETRIEVAL_FETCHED or RETRIEVAL_UNUSABLE_SHORT -- both
-        # count; "unusable" is a resolved, honest outcome, not a blocker).
-        # Permissionless. NOT gated on self.paused (progress/exit
-        # operation).
+        # Step 3 of Close -> Fetch -> Seal. Deterministic. Permissionless.
+        # NOT gated on self.paused (progress/exit operation).
+        #
+        # Stage 6b correction: evidence is split into a REQUIRED lane and
+        # a NON-BLOCKING (community) lane at seal time.
+        #   FORK case: required = evidence submitted by fork.creator.
+        #     non-blocking = evidence submitted by anyone else.
+        #   ROOT_ENVELOPE case: required = ALL evidence (there is no
+        #     community-contribution path for root-envelope evidence in
+        #     V1 -- every item shares the same submitter -- so uniform
+        #     "required" parity with a FORK's creator lane is the correct
+        #     application of the same reasoning, not a double standard).
+        #
+        # REQUIRED evidence must reach RETRIEVAL_FETCHED (not merely
+        # "resolved" -- RETRIEVAL_UNUSABLE_SHORT does NOT satisfy the
+        # requirement) or seal is rejected. This prevents a proposer from
+        # padding a case with broken/empty required URLs and sealing
+        # around them.
+        #
+        # NON-BLOCKING (community) evidence may be in ANY retrieval_status
+        # at seal time, including still RETRIEVAL_NOT_FETCHED -- seal
+        # proceeds regardless. This is the fix for the critical defect:
+        # a community contributor's unrenderable/unavailable URL can
+        # never block sealing. Nothing is deleted, mutated, or hidden --
+        # every submitted record remains permanently queryable with its
+        # true status. A community item's retrieval_status of
+        # NOT_FETCHED at seal time does NOT mean "retrieval failed" or
+        # "the claim is false" -- it means only "no consensus-approved
+        # frozen content was committed for this evidence before sealing."
+        # See docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md for the full
+        # "submitted membership vs retrieved content vs adjudication
+        # input" discussion.
         if case_id not in self.cases:
             raise gl.vm.UserError("case not found")
         case = self.cases[case_id]
@@ -1831,16 +1897,37 @@ class Contract(gl.Contract):
         def _lookup(eid):
             return self.evidence[eid]
 
-        total_len = 0
+        if case.case_type == CASE_TYPE_FORK:
+            required_owner = self.forks[case.target_id].creator
+        elif case.case_type == CASE_TYPE_ROOT_ENVELOPE:
+            required_owner = None  # sentinel: every item is required
+        else:
+            raise gl.vm.UserError("unsupported case_type for seal")
+
+        eligible_ids = DynArray[u256]()
         for eid in case.evidence_ids:
             ev = self.evidence[eid]
-            if not ev.frozen:
-                raise gl.vm.UserError("not all evidence fetched")
-            total_len = total_len + len(ev.frozen_content)
-        if total_len > MAX_FROZEN_CONTENT_PER_CASE:
-            raise gl.vm.UserError("MAX_FROZEN_CONTENT_PER_CASE exceeded")
+            is_required = required_owner is None or ev.submitter == required_owner
+            if is_required:
+                if ev.retrieval_status != RETRIEVAL_FETCHED:
+                    raise gl.vm.UserError("required evidence not fetched: " + str(int(eid)))
+                eligible_ids.append(eid)
+            elif ev.retrieval_status == RETRIEVAL_FETCHED:
+                eligible_ids.append(eid)
+            # else: non-required and not FETCHED (NOT_FETCHED or
+            # UNUSABLE_SHORT) -- remains in membership/provenance,
+            # excluded from the adjudication-eligible set, does not
+            # block seal.
 
-        evidence_set_fp = _evidence_set_fingerprint(int(case_id), case.evidence_ids, _lookup)
+        # retrieval_disposition_fingerprint binds the true status of
+        # EVERY submitted member, required or not, eligible or not --
+        # the complete, auditable disposition record.
+        disposition_fp = _retrieval_disposition_fingerprint(
+            int(case_id), case.evidence_ids, _lookup
+        )
+        # evidence_set_fingerprint binds ONLY the adjudication-eligible
+        # subset -- what Stage 7 is actually allowed to consume.
+        evidence_set_fp = _evidence_set_fingerprint(int(case_id), eligible_ids, _lookup)
 
         if case.case_type == CASE_TYPE_FORK:
             fork = self.forks[case.target_id]
@@ -1854,6 +1941,7 @@ class Contract(gl.Contract):
                     int(fork.root_id),
                     root.import_fingerprint,
                     case.membership_fingerprint,
+                    disposition_fp,
                     evidence_set_fp,
                 )
             )
@@ -1867,6 +1955,7 @@ class Contract(gl.Contract):
                     root.import_fingerprint,
                     root.envelope,
                     case.membership_fingerprint,
+                    disposition_fp,
                     evidence_set_fp,
                 )
             )
@@ -1908,6 +1997,7 @@ class Contract(gl.Contract):
             target_fingerprint=case.target_fingerprint,
             evidence_ids=case.evidence_ids,
             membership_fingerprint=case.membership_fingerprint,
+            retrieval_disposition_fingerprint=disposition_fp,
             evidence_set_fingerprint=evidence_set_fp,
             adjudication_dimensions_version=case.adjudication_dimensions_version,
             case_fingerprint=case_fp,
@@ -1918,13 +2008,23 @@ class Contract(gl.Contract):
 
     @gl.public.write
     def abort_case(self, case_id: u256) -> None:
-        # Explicit, auditable escape valve (docs sec 8/9): a closed case
-        # whose evidence membership can never fully resolve (a permanently
-        # unavailable URL, or a total-content-cap breach at seal time)
-        # would otherwise be stuck forever. Owner-gated. Only a CLOSED
-        # (not yet sealed) case may be aborted -- an OPEN case doesn't need
+        # Explicit, auditable escape valve. Stage 6b correction narrowed
+        # its purpose: community (non-required) evidence can no longer
+        # block sealing at all (see seal_evidence), so this is no longer
+        # needed for third-party griefing. It remains useful for the one
+        # residual scenario: REQUIRED evidence (a fork creator's own
+        # submitted URL, or -- since all root-envelope evidence is
+        # required -- any root-envelope evidence) becomes permanently
+        # unfetchable, which would otherwise stick the case at
+        # CASE_EVIDENCE_CLOSED forever. Owner-gated. Only a CLOSED (not
+        # yet sealed) case may be aborted -- an OPEN case doesn't need
         # aborting (evidence submission can simply stop), and a
-        # CASE_FROZEN case is immutable by design.
+        # CASE_FROZEN case is immutable by design. Aborting does not
+        # delete or alter any evidence record; the case and its evidence
+        # remain permanently queryable in their exact prior state. V1
+        # does not implement a fresh-case-retry path for the same fork/
+        # root -- see docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md for the
+        # explicit justification.
         if self.paused:
             raise gl.vm.UserError("paused")
         if case_id not in self.cases:
@@ -1942,6 +2042,7 @@ class Contract(gl.Contract):
             target_fingerprint=case.target_fingerprint,
             evidence_ids=case.evidence_ids,
             membership_fingerprint=case.membership_fingerprint,
+            retrieval_disposition_fingerprint=case.retrieval_disposition_fingerprint,
             evidence_set_fingerprint=case.evidence_set_fingerprint,
             adjudication_dimensions_version=case.adjudication_dimensions_version,
             case_fingerprint=case.case_fingerprint,

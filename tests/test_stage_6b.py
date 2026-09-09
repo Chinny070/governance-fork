@@ -152,6 +152,7 @@ class CloseEvidenceTests(unittest.TestCase):
             case_type=gf.CASE_TYPE_ROOT_ENVELOPE, target_id=rid,
             target_kind=gf.TARGET_KIND_ROOT_ENVELOPE, target_fingerprint=b"",
             evidence_ids=shim.DynArray([]), membership_fingerprint=b"",
+            retrieval_disposition_fingerprint=b"",
             evidence_set_fingerprint=b"", adjudication_dimensions_version=shim.u32(1),
             case_fingerprint=b"", state=gf.CASE_OPEN, retry_count=shim.u32(0),
             last_attempt_at=shim.u256(0),
@@ -386,6 +387,9 @@ class SealEvidenceTests(unittest.TestCase):
             c.seal_evidence(case_id)
 
     def test_seal_before_all_fetched_rejected(self):
+        # ROOT_ENVELOPE case: every item is in the required lane (no
+        # community concept for root evidence), so a still-NOT_FETCHED
+        # member blocks seal exactly like a FORK creator item would.
         c, did, rid, case_id = self._closed_two_item_case()
         eids = list(c.evidence_by_case[case_id])
         shim.get_mock_web().set_response("https://x/1", "only first item fetched here")
@@ -393,16 +397,137 @@ class SealEvidenceTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.seal_evidence(case_id)
 
-    def test_seal_succeeds_when_all_resolved_including_unusable(self):
+    def test_root_envelope_seal_rejects_when_required_evidence_unusable_short(self):
+        # Stage 6b correction: for ROOT_ENVELOPE cases (uniformly
+        # required lane), RETRIEVAL_UNUSABLE_SHORT does NOT satisfy the
+        # requirement -- only RETRIEVAL_FETCHED does. A resolved-but-
+        # useless required item still blocks seal.
         c, did, rid, case_id = self._closed_two_item_case()
         eids = list(c.evidence_by_case[case_id])
         shim.get_mock_web().set_response("https://x/1", "usable content that is definitely long enough here")
-        shim.get_mock_web().set_response("https://x/2", "")  # unusable, still resolved
+        shim.get_mock_web().set_response("https://x/2", "")  # resolves, but unusable
         c.fetch_evidence(eids[0])
         c.fetch_evidence(eids[1])
-        c.seal_evidence(case_id)  # must not raise
+        with self.assertRaises(UserError) as ctx:
+            c.seal_evidence(case_id)
+        self.assertIn("required evidence not fetched", str(ctx.exception))
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_EVIDENCE_CLOSED)
+
+    def test_root_envelope_seal_succeeds_when_all_required_fetched(self):
+        c, did, rid, case_id = self._closed_two_item_case()
+        eids = list(c.evidence_by_case[case_id])
+        shim.get_mock_web().set_response("https://x/1", "first required item content long enough here")
+        shim.get_mock_web().set_response("https://x/2", "second required item content long enough here")
+        c.fetch_evidence(eids[0])
+        c.fetch_evidence(eids[1])
+        c.seal_evidence(case_id)
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_CASE_FROZEN)
+
+    def test_fork_seal_succeeds_with_unresolved_community_evidence(self):
+        # THE core correction: community (non-required) evidence stuck at
+        # NOT_FETCHED forever does not block seal, as long as every
+        # creator (required) item is RETRIEVAL_FETCHED.
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/never-fetched",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter == creator:
+                mock.set_response(ev.url, "creator content that is long enough to be useful")
+                c.fetch_evidence(eid)
+            # community item deliberately never fetched -- no mock
+            # response configured, left permanently NOT_FETCHED.
+        c.seal_evidence(case_id)  # must NOT raise
         case = c.get_case(case_id)
         self.assertEqual(case.state, gf.CASE_CASE_FROZEN)
+        community_eid = [e for e in eids if c.get_evidence(e).submitter != creator][0]
+        self.assertEqual(c.get_evidence(community_eid).retrieval_status, gf.RETRIEVAL_NOT_FETCHED)
+
+    def test_fork_seal_succeeds_with_unusable_short_community_evidence(self):
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/weak",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter == creator:
+                mock.set_response(ev.url, "creator content that is long enough to be useful")
+            else:
+                mock.set_response(ev.url, "")  # resolves, unusable
+            c.fetch_evidence(eid)
+        c.seal_evidence(case_id)  # must NOT raise -- unusable community is non-blocking too
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_CASE_FROZEN)
+
+    def test_fork_seal_rejects_when_creator_evidence_unusable_short(self):
+        # Required lane (creator) still enforces RETRIEVAL_FETCHED, not
+        # merely "resolved" -- symmetric with the ROOT_ENVELOPE rule.
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eid = list(c.evidence_by_case[case_id])[0]
+        shim.get_mock_web().set_response(c.get_evidence(eid).url, "")  # unusable
+        c.fetch_evidence(eid)
+        with self.assertRaises(UserError):
+            c.seal_evidence(case_id)
+
+    def test_community_success_cannot_substitute_for_creator_requirement(self):
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/good",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter != creator:
+                mock.set_response(ev.url, "community content long enough to be fetched fine")
+                c.fetch_evidence(eid)
+            # creator's own item deliberately left NOT_FETCHED
+        with self.assertRaises(UserError) as ctx:
+            c.seal_evidence(case_id)
+        self.assertIn("required evidence not fetched", str(ctx.exception))
+
+    def test_theoretical_max_frozen_storage_is_bounded_without_a_cap(self):
+        # Stage 6b correction removed the seal-blocking total-content cap.
+        # The worst case remains finite and bounded by the pre-existing
+        # caps alone: MAX_EVIDENCE_PER_CASE * MAX_EVIDENCE_SLICE.
+        worst_case = gf.MAX_EVIDENCE_PER_CASE * gf.MAX_EVIDENCE_SLICE
+        self.assertEqual(worst_case, 16 * 16384)
+        self.assertEqual(worst_case, 262144)
+        self.assertFalse(hasattr(gf, "MAX_FROZEN_CONTENT_PER_CASE"))
+
+    def test_large_immutable_fetches_never_prevent_seal(self):
+        # Adversarial-shaped check: even after committing several
+        # maximally-sized evidence items (well past the old removed
+        # cap), seal still succeeds -- no order-dependent, immutable-
+        # content-triggered seal failure is possible any more.
+        urls = tuple(f"https://x/{i}" for i in range(5))
+        c, did, rid, case_id = _fresh_root_case(urls=urls)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        for i, eid in enumerate(eids):
+            mock.set_response(urls[i], "z" * gf.MAX_EVIDENCE_SLICE)
+            c.fetch_evidence(eid)
+        c.seal_evidence(case_id)  # must not raise despite 5 * 16384 content
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_CASE_FROZEN)
 
     def test_seal_computes_deterministic_final_fingerprints(self):
         c, did, rid, case_id = _fresh_root_case(urls=("https://x/1",))
@@ -459,24 +584,6 @@ class SealEvidenceTests(unittest.TestCase):
         shim.set_sender("0x" + "ff" * 20)  # arbitrary caller
         c.seal_evidence(case_id)  # must succeed despite pause and non-owner
         self.assertEqual(c.get_case(case_id).state, gf.CASE_CASE_FROZEN)
-
-    def test_total_content_cap_blocks_seal(self):
-        # Construct a case whose evidence, once fetched, exceeds
-        # MAX_FROZEN_CONTENT_PER_CASE, forcing seal to reject even though
-        # every item individually resolved.
-        urls = tuple(f"https://x/{i}" for i in range(5))
-        c, did, rid, case_id = _fresh_root_case(urls=urls)
-        c.close_evidence(case_id)
-        eids = list(c.evidence_by_case[case_id])
-        per_item = (gf.MAX_FROZEN_CONTENT_PER_CASE // 5) + 1000
-        mock = shim.get_mock_web()
-        for i, eid in enumerate(eids):
-            mock.set_response(urls[i], "z" * min(per_item, gf.MAX_EVIDENCE_SLICE))
-            c.fetch_evidence(eid)
-        with self.assertRaises(UserError):
-            c.seal_evidence(case_id)
-        # Case remains closed, not bricked -- abort_case remains available.
-        self.assertEqual(c.get_case(case_id).state, gf.CASE_EVIDENCE_CLOSED)
 
 
 # ============================================================================
@@ -538,6 +645,80 @@ class AbortCaseTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.abort_case(case_id)
 
+    def test_aborted_case_remains_fully_queryable(self):
+        c, did, rid, case_id = _fresh_root_case(urls=("https://x/1", "https://x/2"))
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        shim.get_mock_web().set_response("https://x/1", "one item fetched before abort here")
+        c.fetch_evidence(eids[0])
+        c.abort_case(case_id)
+        # The case itself is still readable, with its true final state.
+        case = c.get_case(case_id)
+        self.assertEqual(case.state, gf.CASE_ABORTED)
+        self.assertEqual(len(case.evidence_ids), 2)
+        # Every evidence record -- fetched or not -- remains readable.
+        ev0 = c.get_evidence(eids[0])
+        ev1 = c.get_evidence(eids[1])
+        self.assertEqual(ev0.retrieval_status, gf.RETRIEVAL_FETCHED)
+        self.assertEqual(ev0.frozen_content, "one item fetched before abort here")
+        self.assertEqual(ev1.retrieval_status, gf.RETRIEVAL_NOT_FETCHED)
+        page = c.list_evidence_of_case(case_id, shim.u256(0), shim.u32(50))
+        self.assertEqual(set(int(e) for e in page.items), set(int(e) for e in eids))
+
+    def test_abort_does_not_delete_or_mutate_any_state(self):
+        c, did, rid, case_id = _fresh_root_case(urls=("https://x/1",))
+        c.close_evidence(case_id)
+        eid = list(c.evidence_by_case[case_id])[0]
+        before = c.get_evidence(eid)
+        before_membership_fp = c.get_case(case_id).membership_fingerprint
+        c.abort_case(case_id)
+        after = c.get_evidence(eid)
+        after_case = c.get_case(case_id)
+        self.assertEqual(before.url, after.url)
+        self.assertEqual(before.submitter, after.submitter)
+        self.assertEqual(before.retrieval_status, after.retrieval_status)
+        self.assertEqual(before_membership_fp, after_case.membership_fingerprint)
+        # Only state actually changes.
+        self.assertEqual(after_case.state, gf.CASE_ABORTED)
+
+    def test_aborted_case_cannot_adjudicate(self):
+        c, did, rid, case_id = _fresh_root_case()
+        c.close_evidence(case_id)
+        c.abort_case(case_id)
+        with self.assertRaises(UserError):
+            c.adjudicate(case_id)
+
+    def test_no_fresh_case_recovery_path_in_v1(self):
+        # Documented, deliberate V1 limitation (see
+        # docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md "abort/retry
+        # semantics"): once a fork's evidence case is aborted, there is
+        # no contract path to open a second, fresh case for the SAME
+        # fork -- fork.evidence_case_id still points at the aborted case,
+        # and submit_fork_evidence's only two entry states (FORK_DRAFT
+        # for first-time creation, FORK_EVIDENCE_OPEN for reuse) both
+        # resolve back to that same aborted case, whose CASE_OPEN gate
+        # in submit_fork_evidence now rejects further submissions.
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        c.abort_case(case_id)
+        self.assertEqual(int(c.get_fork(fid).evidence_case_id), int(case_id))
+        shim.set_sender(creator)
+        args = _evidence_arrays(("https://a.example.com/fresh-attempt",))
+        with self.assertRaises(UserError):
+            c.submit_fork_evidence(fid, *args)
+
+    def test_no_id_reuse_across_cases(self):
+        c, did, rid, case_id_a = _fresh_root_case(urls=("https://x/1",))
+        c.close_evidence(case_id_a)
+        c.abort_case(case_id_a)
+        did2 = c.register_dao("B", "https://b")
+        rid2 = c.import_root_proposal(did2, "EP2", "T2", "https://y/1", _params([]))
+        args = _evidence_arrays(("https://y/1",))
+        case_id_b = c.submit_root_envelope(rid2, _envelope(), *args)
+        self.assertNotEqual(int(case_id_a), int(case_id_b))
+        self.assertGreater(int(case_id_b), int(case_id_a))
+
 
 # ============================================================================
 # Community-griefing scenarios (fork cases)
@@ -545,7 +726,10 @@ class AbortCaseTests(unittest.TestCase):
 
 
 class CommunityGriefingTests(unittest.TestCase):
-    def test_unavailable_community_evidence_does_not_block_other_items(self):
+    def test_unavailable_community_evidence_does_not_block_seal(self):
+        # THE fix for the critical defect: a community contributor's
+        # permanently-unfetchable URL can no longer block sealing at all
+        # -- no abort_case is needed for this scenario any more.
         c, did, rid, fid, case_id, creator = _fresh_fork_case()
         shim.set_sender(creator)
         outsider = shim.Address("0x" + "dd" * 20)
@@ -556,7 +740,6 @@ class CommunityGriefingTests(unittest.TestCase):
         c.close_evidence(case_id)
         eids = list(c.evidence_by_case[case_id])
         mock = shim.get_mock_web()
-        # Creator's evidence fetches fine; community's fails permanently.
         for eid in eids:
             ev = c.get_evidence(eid)
             if ev.submitter == creator:
@@ -570,30 +753,171 @@ class CommunityGriefingTests(unittest.TestCase):
             else:
                 with self.assertRaises(RenderFailure):
                     c.fetch_evidence(eid)
-        # Case cannot seal -- the unresolved community item blocks it.
-        with self.assertRaises(UserError):
-            c.seal_evidence(case_id)
-        # But it is NOT permanently bricked: creator (owner) can abort.
-        c.abort_case(case_id)
-        self.assertEqual(c.get_case(case_id).state, gf.CASE_ABORTED)
+        c.seal_evidence(case_id)  # must NOT raise
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_CASE_FROZEN)
+        # The community item remains permanently queryable, honestly
+        # NOT_FETCHED -- never deleted, never claimed false.
+        community_eid = [e for e in eids if c.get_evidence(e).submitter != creator][0]
+        ev = c.get_evidence(community_eid)
+        self.assertEqual(ev.retrieval_status, gf.RETRIEVAL_NOT_FETCHED)
+        self.assertEqual(ev.content_fingerprint, b"")
 
-    def test_unavailable_creator_evidence_treated_identically(self):
-        # Symmetric handling: a creator's own unfetchable URL blocks seal
-        # exactly the same way a community one would -- no special-casing
-        # by contributor lane (see docs sec 7 rationale).
+    def test_unavailable_creator_evidence_still_blocks_seal(self):
+        # Creator (required-lane) evidence remains a genuine seal
+        # requirement -- unlike community evidence, it is NOT made
+        # non-blocking. abort_case remains the correct tool here.
         c, did, rid, fid, case_id, creator = _fresh_fork_case()
         shim.set_sender(creator)
         c.close_evidence(case_id)
         eid = list(c.evidence_by_case[case_id])[0]
-        shim.get_mock_web().set_failure(
-            c.get_evidence(eid).url
-        )
+        shim.get_mock_web().set_failure(c.get_evidence(eid).url)
         with self.assertRaises(RenderFailure):
             c.fetch_evidence(eid)
         with self.assertRaises(UserError):
             c.seal_evidence(case_id)
         c.abort_case(case_id)
         self.assertEqual(c.get_case(case_id).state, gf.CASE_ABORTED)
+
+    def test_community_fetched_evidence_included_in_adjudication_set(self):
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/good",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        community_eid = None
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter == creator:
+                mock.set_response(ev.url, "creator content that is long enough here")
+            else:
+                mock.set_response(ev.url, "community content that is long enough here too")
+                community_eid = eid
+            c.fetch_evidence(eid)
+        c.seal_evidence(case_id)
+
+        def lookup(e):
+            return c.evidence[e]
+
+        # The adjudication input set (evidence_set_fingerprint) includes
+        # ALL evidence ids since both creator and community ended up
+        # FETCHED here.
+        expected = gf._evidence_set_fingerprint(int(case_id), eids, lookup)
+        self.assertEqual(c.get_case(case_id).evidence_set_fingerprint, expected)
+        self.assertIsNotNone(community_eid)
+
+    def test_stage7_input_excludes_records_without_eligible_content(self):
+        # The adjudication input set (evidence_set_fingerprint) must
+        # differ from a fingerprint computed over ALL membership when a
+        # non-required item never reached FETCHED.
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/never",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        mock = shim.get_mock_web()
+        creator_eid = None
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter == creator:
+                mock.set_response(ev.url, "creator content that is long enough here")
+                c.fetch_evidence(eid)
+                creator_eid = eid
+            # community item left NOT_FETCHED
+        c.seal_evidence(case_id)
+
+        def lookup(e):
+            return c.evidence[e]
+
+        full_membership_fp = gf._evidence_set_fingerprint(int(case_id), eids, lookup)
+        eligible_only_fp = gf._evidence_set_fingerprint(int(case_id), [creator_eid], lookup)
+        actual = c.get_case(case_id).evidence_set_fingerprint
+        self.assertNotEqual(actual, full_membership_fp)
+        self.assertEqual(actual, eligible_only_fp)
+
+    def test_seal_fingerprints_the_true_disposition_of_every_member(self):
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/never2",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        eids = list(c.evidence_by_case[case_id])
+        for eid in eids:
+            ev = c.get_evidence(eid)
+            if ev.submitter == creator:
+                shim.get_mock_web().set_response(ev.url, "creator content long enough here too")
+                c.fetch_evidence(eid)
+        c.seal_evidence(case_id)
+
+        def lookup(e):
+            return c.evidence[e]
+
+        expected_disposition = gf._retrieval_disposition_fingerprint(int(case_id), eids, lookup)
+        self.assertEqual(c.get_case(case_id).retrieval_disposition_fingerprint, expected_disposition)
+        # The disposition fingerprint covers ALL members (including the
+        # still-NOT_FETCHED community one) -- distinct from the
+        # adjudication-input-only evidence_set_fingerprint.
+        self.assertNotEqual(
+            c.get_case(case_id).retrieval_disposition_fingerprint,
+            c.get_case(case_id).evidence_set_fingerprint,
+        )
+
+    def test_creator_cannot_delete_or_overwrite_community_membership(self):
+        # Structural guarantee: no method exists that removes an evidence
+        # record or lets the creator rewrite another submitter's data.
+        # Membership is frozen at close and every record remains
+        # reachable via list_evidence_of_case / get_evidence forever.
+        c, did, rid, fid, case_id, creator = _fresh_fork_case()
+        shim.set_sender(creator)
+        outsider = shim.Address("0x" + "dd" * 20)
+        shim.set_sender(outsider)
+        args = _evidence_arrays(("https://community.example.com/protected",))
+        c.submit_fork_evidence(fid, *args)
+        shim.set_sender(creator)
+        c.close_evidence(case_id)
+        before_ids = set(int(e) for e in c.evidence_by_case[case_id])
+        # Creator has no privileged write path onto community records --
+        # only fetch_evidence exists, and it is content-neutral (executes
+        # the SAME render() regardless of caller identity) and permission-
+        # less, never submitter-aware in what it writes.
+        community_eid = [
+            e for e in c.evidence_by_case[case_id]
+            if c.get_evidence(e).submitter != creator
+        ][0]
+        original_submitter = c.get_evidence(community_eid).submitter
+        original_url = c.get_evidence(community_eid).url
+        shim.get_mock_web().set_response(
+            c.get_evidence(community_eid).url, "content fetched by whoever calls fetch_evidence"
+        )
+        c.fetch_evidence(community_eid)  # creator or anyone may call this
+        after = c.get_evidence(community_eid)
+        self.assertEqual(after.submitter, original_submitter)  # provenance unchanged
+        self.assertEqual(after.url, original_url)  # URL unchanged
+        after_ids = set(int(e) for e in c.evidence_by_case[case_id])
+        self.assertEqual(before_ids, after_ids)  # nothing added/removed
+
+    def test_no_semantic_penalty_encoded_in_retrieval_outcome(self):
+        # Structural: Stage 6b contains no verdict/adjudication logic at
+        # all. A NOT_FETCHED or UNUSABLE_SHORT status is a retrieval fact,
+        # never a judgment.
+        import pathlib
+        src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
+        seal_start = src.index("def seal_evidence")
+        seal_end = src.index("def abort_case")
+        seal_body = src[seal_start:seal_end]
+        for banned in ("NOT_FAITHFUL", "VERDICT_", "FINDING_"):
+            self.assertNotIn(banned, seal_body)
 
     def test_transparent_unusable_status_no_silent_drop(self):
         # A community item that resolves to unusable-short content is
@@ -899,6 +1223,33 @@ class RootForkParityTests(unittest.TestCase):
         )
         c.fetch_evidence(eid)
         c.seal_evidence(case_id)
+        self.assertEqual(c.get_root_proposal(rid).web_content_fingerprint, b"")
+
+    def test_root_web_content_fingerprint_never_derived_from_unusable_short(self):
+        # Sec 15 requirement: web_content_fingerprint must only ever come
+        # from a RETRIEVAL_FETCHED record. For ROOT_ENVELOPE cases this is
+        # now structurally guaranteed: every member of a root-envelope
+        # case is in the required lane (sec 4), so seal itself rejects
+        # before reaching the web_content_fingerprint derivation step if
+        # the canonical URL resolved to UNUSABLE_SHORT -- there is no
+        # code path that could derive it from unusable content.
+        c = _fresh()
+        did = c.register_dao("A", "https://a")
+        rid = c.import_root_proposal(
+            did, "EP", "T", "https://canonical.example.com/prop", _params([]),
+        )
+        args = _evidence_arrays(("https://canonical.example.com/prop",))
+        case_id = c.submit_root_envelope(rid, _envelope(), *args)
+        c.close_evidence(case_id)
+        eid = list(c.evidence_by_case[case_id])[0]
+        shim.get_mock_web().set_response("https://canonical.example.com/prop", "")  # unusable
+        c.fetch_evidence(eid)
+        self.assertEqual(c.get_evidence(eid).retrieval_status, gf.RETRIEVAL_UNUSABLE_SHORT)
+        with self.assertRaises(UserError):
+            c.seal_evidence(case_id)  # required (all) evidence must be FETCHED
+        # Case never reached CASE_CASE_FROZEN, so web_content_fingerprint
+        # was never touched -- still empty, never derived from unusable
+        # content.
         self.assertEqual(c.get_root_proposal(rid).web_content_fingerprint, b"")
 
     def test_no_duplicate_fetch_for_root_canonical_url(self):

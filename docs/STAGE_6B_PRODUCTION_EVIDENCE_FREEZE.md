@@ -1,5 +1,7 @@
 # Stage 6b — Production Evidence Retrieval, Content Fingerprinting & Atomic Evidence Freeze
 
+> **Correction applied after review of commit `28c42c1`.** The original Stage 6b design made ALL evidence — creator and community alike — a symmetric seal blocker, and enforced a seal-time total-content cap (`MAX_FROZEN_CONTENT_PER_CASE`). Both created a real griefing/bricking risk: a single unavailable community URL, or an ordinary sequence of successful fetches that happened to cross the cap, could permanently prevent a case from ever sealing, with `abort_case` as the only (destructive-feeling) way out. This correction makes community evidence **non-blocking** at seal (§4, §11, §18) and **removes the seal-blocking content cap entirely** (§11a), while keeping creator/root-envelope evidence strictly required and every submitted record fully auditable, never deleted or rewritten. Sections below marked **[CORRECTED]** reflect this fix; the rest of the document (render-only retrieval, profiles, retrieval-status model, `WEBPAGE_LOAD_FAILED`/`Undetermined` handling, per-evidence bound, stored-content immutability, lifecycle mechanics, authorization, pause behavior) is unchanged and remains architecturally approved.
+
 **Scope.** Implements `contracts/governance_fork.py`'s first production web-evidence pathway: `close_evidence` → `fetch_evidence` → `seal_evidence`, plus the `abort_case` escape valve. Uses `gl.nondet.web.render(...)` wrapped in `gl.eq_principle.strict_eq(...)` — the exact pattern Stage 6a validated live, per the current official Fetch Web Content docs, re-checked immediately before this stage began (no material change since Stage 6a).
 
 **Explicitly not in scope.** Semantic proposal-fidelity adjudication, Intent Envelope semantic adjudication, verdict generation, challenges, finalization, GEN bonds, payouts, frontend, production deployment.
@@ -83,30 +85,61 @@ Content at or above the threshold commits `RETRIEVAL_FETCHED`; below it commits 
 
 `MAX_EVIDENCE_SLICE = 16384` unchanged from Stage 2. Stage 6a's largest single observed source (`SOURCE_2_TALLY`) reached 12,955 characters — 79.1% of this bound — without truncation. No evidence justifies changing it. `fetch_evidence` slices with `content[:MAX_EVIDENCE_SLICE]` before hashing, exactly matching the Stage 6a probe's own slicing rule; the stored content and the hashed content are always byte-identical (verified by `test_fingerprint_matches_stored_content`).
 
-## 11. Case-level total content cap — new, provisional
+## 11. Case-level total content cap — **[CORRECTED] removed entirely**
 
-```python
-MAX_FROZEN_CONTENT_PER_CASE = 65536
+The original design's `MAX_FROZEN_CONTENT_PER_CASE = 65536`, enforced at `seal_evidence`, is **removed**. It was a genuine defect, not merely a conservative choice: `fetch_evidence` commits are immutable (§13), so a case that accumulated valid, successfully-fetched evidence past the cap through nothing but ordinary use became **permanently unsealable** — an unrecoverable dead end structurally identical in kind to the community-evidence bricking defect this correction fixes (§18). A late, seal-only cap over already-irreversible writes is unsafe regardless of the specific number chosen.
+
+**No replacement cap was added.** The theoretical maximum frozen storage per case remains finite and bounded by the pre-existing, already-enforced caps alone:
+
+```
+MAX_EVIDENCE_PER_CASE (16) × MAX_EVIDENCE_SLICE (16,384) = 262,144 chars per case, worst case
 ```
 
-**Rationale.** 16 evidence items × 16,384 chars = 262,144 chars worst case per case — excessive for storage, Explorer usability, and eventual Stage 7 prompt size. 65,536 is roughly 4× Stage 6a's largest single observed source, giving headroom for several rich evidence items per case without approaching the theoretical worst case. **Explicitly marked provisional** per this stage's own instruction ("if current evidence is insufficient to safely select a cap: mark provisional and create a later live stress gate") — Stage 6b has no live data on realistic *multi*-evidence case sizes, only single-source data from Stage 6a.
+This bound was always true; removing `MAX_FROZEN_CONTENT_PER_CASE` does not make storage unbounded, it only removes a *second, redundant, order-dependent* cap that could brick a case before the *first* one was ever approached. `test_theoretical_max_frozen_storage_is_bounded_without_a_cap` asserts this arithmetic directly; `test_large_immutable_fetches_never_prevent_seal` proves seal succeeds even after committing several maximum-size evidence items well past the old cap's threshold.
 
-**Enforcement.** Checked at `seal_evidence`, not at `fetch_evidence` — an individual fetch always commits if it succeeds (content and fingerprint are never discarded after the fact, per the immutability rule in §13). If the sum of all frozen content in a case exceeds the cap, `seal_evidence` rejects and the case remains `CASE_EVIDENCE_CLOSED` — not bricked; `abort_case` remains available (§14). Verified by `test_total_content_cap_blocks_seal`.
+**Stage 7's prompt-size budget is explicitly a separate, later problem.** If a future stage's semantic adjudication needs a smaller effective input than 262,144 chars, that is solved with Stage 7-side techniques — bounded per-evidence excerpts, staged evaluation, evidence-by-evidence findings, bounded aggregation — never by re-introducing a Stage 6b storage/freeze-integrity cap. Freezing a trustworthy historical evidence snapshot and consuming it semantically are different problems with different failure costs: a storage cap that blocks freezing is unrecoverable (evidence is lost to history); a prompt-budget choice in Stage 7 is revisable per-run.
 
-## 12. Fingerprint layering — three distinct, never-blurred identities
+## 12. Fingerprint layering — **[CORRECTED]** four distinct, never-blurred identities
+
+Three concepts, not one, describe an evidence case's evolving state, and the correction makes all three independently fingerprinted so Stage 7 can never reinterpret which evidence was actually included:
+
+1. **Submitted membership** — every evidence ID frozen at `close_evidence`, creator and community alike, before any content exists.
+2. **Retrieved content set** — evidence records with *any* committed terminal `retrieval_status` (`RETRIEVAL_FETCHED` or `RETRIEVAL_UNUSABLE_SHORT`), regardless of lane. Not separately fingerprinted as its own concept — it is fully recoverable from the disposition fingerprint below plus each item's own `content_fingerprint`.
+3. **Adjudication input set** — the exact subset Stage 7 may consume: every required (creator, or all-of-root-envelope) item (guaranteed `RETRIEVAL_FETCHED` by the seal gate) **plus** any non-required (community) item that happened to reach `RETRIEVAL_FETCHED` by seal time. Excludes non-required items still `NOT_FETCHED` or `UNUSABLE_SHORT` — present in membership and disposition, absent here.
 
 | Field | Binds | Computed at |
 |---|---|---|
 | `Evidence.content_fingerprint` | `SHA-256(bounded_rendered_text)` **alone** | `fetch_evidence` |
-| `Case.membership_fingerprint` | ordered (evidence_id, normalized_url, render_profile, submitter, evidence_class) — **before any content exists** | `close_evidence` |
-| `Case.evidence_set_fingerprint` | ordered (evidence_id, content_fingerprint, retrieval_status) — **after all fetches resolve** | `seal_evidence` |
-| `Case.case_fingerprint` | target-specific identity (fork or root envelope) + both fingerprints above | `seal_evidence` |
+| `Case.membership_fingerprint` | ordered (evidence_id, normalized_url, render_profile, submitter, evidence_class) for **every submitted member** — **before any content exists** | `close_evidence` |
+| `Case.retrieval_disposition_fingerprint` **(new field)** | ordered (evidence_id, retrieval_status) for **every submitted member**, whatever it resolved to (or didn't) | `seal_evidence` |
+| `Case.evidence_set_fingerprint` | ordered (evidence_id, content_fingerprint) for the **adjudication-eligible subset only** | `seal_evidence` |
+| `Case.case_fingerprint` | target-specific identity + `membership_fingerprint` + `retrieval_disposition_fingerprint` + `evidence_set_fingerprint` + `adjudication_dimensions_version` | `seal_evidence` |
 
-**Why `content_fingerprint` is pure content identity, with no metadata mixed in.** Anyone who independently fetches the same URL under the same render profile can reproduce the exact same `content_fingerprint` by hashing the result themselves — a directly auditable property. Source identity (who submitted it, what class they claimed) and case identity (which case, which target) live one layer up, in `membership_fingerprint` and `case_fingerprint` respectively. Domain-separation tags (`"gf-delta/v1"`-style prefixes: `"gf-case-membership/v1"`, `"gf-evidence-set/v1"`, `"gf-case/v1"`) prevent any cross-purpose fingerprint collision even if byte content happened to coincide.
+**Why a fourth field (`retrieval_disposition_fingerprint`) was necessary, not optional.** Before the correction, `evidence_set_fingerprint` tried to mean two things at once — "what was submitted" and "what's usable" — which is exactly the kind of overload the original architecture review warned against. Splitting them means: `evidence_set_fingerprint` alone answers "what did Stage 7 actually see," while `retrieval_disposition_fingerprint` alone answers "what happened to everything that was submitted, including what Stage 7 never saw." Neither can substitute for the other, and `case_fingerprint` binds both so a later reader cannot claim one without the other being independently checkable.
 
-**`case_fingerprint` for `CASE_TYPE_FORK`** binds: case type/version, case_id, `adjudication_dimensions_version`, `fork_id`, `fork.body_fingerprint`, `root_id`, `root.import_fingerprint`, `membership_fingerprint`, `evidence_set_fingerprint`.
+**Why `content_fingerprint` is pure content identity, with no metadata mixed in.** Unchanged from the original design: anyone who independently fetches the same URL under the same render profile can reproduce the exact same `content_fingerprint` by hashing the result themselves. Domain-separation tags (`"gf-case-membership/v1"`, `"gf-retrieval-disposition/v1"`, `"gf-evidence-set/v1"`, `"gf-case/v1"`) prevent any cross-purpose fingerprint collision even if byte content happened to coincide.
 
-**`case_fingerprint` for `CASE_TYPE_ROOT_ENVELOPE`** binds: case type/version, case_id, `adjudication_dimensions_version`, `root_id`, `root.import_fingerprint`, and the **complete** frozen envelope (`objective`, `beneficiary_class`, `resource_type`, `scope`, `essential_constraints`, `mutable_dimensions`, `immutable_dimensions`, `envelope_version`) — not a subset. An earlier draft of this stage bound only four envelope fields; a test (`test_case_fingerprint_root_envelope_binds_envelope_fields`) caught that two envelopes differing only in dimension classification produced identical fingerprints, and the canonicalization was corrected to bind the full envelope before this stage was considered complete.
+**`case_fingerprint` for `CASE_TYPE_FORK`** binds: case type/version, case_id, `adjudication_dimensions_version`, `fork_id`, `fork.body_fingerprint`, `root_id`, `root.import_fingerprint`, `membership_fingerprint`, `retrieval_disposition_fingerprint`, `evidence_set_fingerprint`.
+
+**`case_fingerprint` for `CASE_TYPE_ROOT_ENVELOPE`** binds: case type/version, case_id, `adjudication_dimensions_version`, `root_id`, `root.import_fingerprint`, the **complete** frozen envelope (`objective`, `beneficiary_class`, `resource_type`, `scope`, `essential_constraints`, `mutable_dimensions`, `immutable_dimensions`, `envelope_version`) — not a subset (an earlier draft bound only four fields; a test caught the gap before this stage first landed) — `membership_fingerprint`, `retrieval_disposition_fingerprint`, `evidence_set_fingerprint`.
+
+## 12a. Submitted membership vs. retrieved content vs. adjudication input — the required/non-blocking split
+
+**Required lane (must reach `RETRIEVAL_FETCHED`, or seal is rejected):**
+- `CASE_TYPE_FORK`: evidence submitted by `fork.creator`.
+- `CASE_TYPE_ROOT_ENVELOPE`: **every** submitted item — there is no community-contribution path for root-envelope evidence in V1 (every item currently shares one submitter), so applying the same "required" rule uniformly is the correct parity application of the fork rule, not a double standard (§4 of the correction, §19 of this doc).
+
+Critically, `RETRIEVAL_UNUSABLE_SHORT` does **not** satisfy the required-lane requirement, and neither does `RETRIEVAL_NOT_FETCHED` — only a genuinely useful `RETRIEVAL_FETCHED` result counts. This prevents a proposer from padding a case with broken or empty required URLs and sealing around them (`test_fork_seal_rejects_when_creator_evidence_unusable_short`, `test_root_envelope_seal_rejects_when_required_evidence_unusable_short`).
+
+**Non-blocking lane (community evidence on `CASE_TYPE_FORK` only):** any `retrieval_status` is acceptable at seal time.
+
+- `RETRIEVAL_FETCHED` → included in the adjudication input set (`test_community_fetched_evidence_included_in_adjudication_set`).
+- `RETRIEVAL_UNUSABLE_SHORT` → remains in membership and disposition, fully auditable (`frozen_content`/`content_fingerprint` preserved), but **excluded** from the adjudication input set unless a future stage explicitly supports consuming unusable-length evidence (`test_fork_seal_succeeds_with_unusable_short_community_evidence`).
+- `RETRIEVAL_NOT_FETCHED` → remains in membership and disposition, excluded from the adjudication input set, **does not block seal** (`test_fork_seal_succeeds_with_unresolved_community_evidence`, `test_stage7_input_excludes_records_without_eligible_content`).
+
+**Exact wording for `NOT_FETCHED` at seal time**, precise on purpose: *"No consensus-approved frozen content was committed for this evidence before sealing."* This is explicitly **not** a claim that the URL is unreachable, that the claim is false, or that retrieval "failed" in any semantic sense — it is a statement about what the contract observed by the time sealing happened, nothing more. A future case could, in principle, still fetch that same evidence item... except it cannot, because `fetch_evidence` requires `case.state == CASE_EVIDENCE_CLOSED` and sealing moves the case to `CASE_CASE_FROZEN`. So in practice, once sealed, a `NOT_FETCHED` community item's disposition is permanent for that case — but the *reason* it never resolved is never claimed to be known, and no semantic weight is attached to it by Stage 6b.
+
+**Community evidence is never silently dropped.** No method exists that deletes an `Evidence` record. `close_evidence` freezes membership (including every community item) into `membership_fingerprint`; `seal_evidence` freezes the true disposition of every member (including community items that stayed `NOT_FETCHED`) into `retrieval_disposition_fingerprint`. Both remain permanently queryable via `get_case`/`get_evidence`/`list_evidence_of_case`. Only inclusion in the *adjudication input set* is conditional — the record itself never is (`test_creator_cannot_delete_or_overwrite_community_membership`, `test_seal_fingerprints_the_true_disposition_of_every_member`).
 
 ## 13. Stored content — exact, immutable, never refetched
 
@@ -116,9 +149,9 @@ MAX_FROZEN_CONTENT_PER_CASE = 65536
 
 For an evidence item not yet successfully fetched, `fetch_evidence` may be retried any number of times (§8's atomicity guarantee makes this safe). **After a successful commit — `RETRIEVAL_FETCHED` or `RETRIEVAL_UNUSABLE_SHORT`, both terminal — no refetch, no refresh, no "update to latest page."** A successful freeze captures a historical snapshot. If a newer version of a page matters later, that requires a new case/evidence record, not a mutation of this one.
 
-## 15. Case freeze atomicity
+## 15. Case freeze atomicity — **[CORRECTED]**
 
-Invariant enforced by construction: a case with N evidence records cannot become `CASE_CASE_FROZEN` unless every one of its N members has resolved to a terminal `retrieval_status`. `seal_evidence` checks `ev.frozen` (true once any terminal status is committed) for every `eid` in `case.evidence_ids` before computing anything; the first unresolved item raises immediately, before any fingerprint is computed or any state written. No partial freeze is representable (`test_no_partial_final_freeze_on_reject`).
+Invariant enforced by construction, restated for the corrected rule: a case with N evidence records cannot become `CASE_CASE_FROZEN` unless every **required** member (§12a) has reached `RETRIEVAL_FETCHED`. Non-required (community) members impose **no** condition — any status, including still `RETRIEVAL_NOT_FETCHED`, is acceptable. `seal_evidence` classifies each member as required or not, checks the required ones first (the first required item that isn't `RETRIEVAL_FETCHED` raises immediately, before any fingerprint is computed or any state written), and only then computes the eligible set and both new-and-existing fingerprints. No partial freeze is representable (`test_no_partial_final_freeze_on_reject`); no non-required item can block a freeze that every required item is ready for (`test_fork_seal_succeeds_with_unresolved_community_evidence`).
 
 ## 16. Close → Fetch → Seal lifecycle
 
@@ -129,12 +162,16 @@ CASE_EVIDENCE_CLOSED
   → fetch_evidence(evidence_id) x N [nondeterministic, permissionless, NOT paused-gated,
                                       one evidence item per call, retriable on failure]
   → seal_evidence(case_id)          [deterministic, permissionless, NOT paused-gated,
-                                      requires every member resolved]
+                                      requires every REQUIRED member RETRIEVAL_FETCHED;
+                                      non-required members impose no condition]
 CASE_CASE_FROZEN                    [terminal, immutable]
 
 CASE_EVIDENCE_CLOSED
   → abort_case(case_id)             [deterministic, owner-gated, paused-gated]
-CASE_ABORTED                        [terminal, explicit, auditable escape valve]
+CASE_ABORTED                        [terminal, explicit, auditable escape valve --
+                                      now needed only when REQUIRED evidence is
+                                      permanently unfetchable; community evidence
+                                      alone can never force this path]
 ```
 
 `CASE_EVIDENCE_FROZEN` (a Stage 2-reserved enum value) is intentionally **not** used as a `Case.state` value by this design — both `evidence_set_fingerprint` and `case_fingerprint` are pure deterministic computations over already-committed evidence with no nondeterminism between them, so there is no natural moment where a case would sit "all evidence frozen but not yet sealed." The constant remains defined (harmless, avoids implying prior work was wrong) but documented here as unused by Stage 6b's state machine.
@@ -145,23 +182,45 @@ CASE_ABORTED                        [terminal, explicit, auditable escape valve]
 
 `fetch_evidence` and `seal_evidence` are **fully permissionless** — any caller may advance a closed case (verified by `test_fetch_permissionless_and_not_paused_gated`, `test_seal_permissionless_and_not_paused_gated`), favoring liveness over restricting who can pay the gas to make progress.
 
-## 18. Community-evidence griefing — solution and reasoning
+## 18. Community-evidence griefing — **[CORRECTED]** solution and reasoning
 
-**The attack:** a contributor (creator or community) submits an apparently valid URL; membership closes; the URL becomes permanently unavailable or unrenderable; the case can never resolve every member to a terminal status, so it can never seal.
+**The original defect.** Version `28c42c1` required *every* member — creator and community alike — to reach a terminal `retrieval_status` before a case could seal. This made a single community contributor's unrenderable or intentionally-broken URL a genuine bricking vector: membership closes, the URL never resolves, the case can never seal, and the only escape was `abort_case` — an entire-case-level response to what should have been a single evidence item's problem. Worse, since `abort_case` had no companion fresh-attempt path (§18b), a determined griefer effectively forced the fork/root's evidence effort to a dead end.
 
-**Chosen model, and why the instructions' suggested required/optional split was evaluated and not needed:** the architecture reviewed distinguishing "required" (creator) evidence from "optional" (community) evidence for seal purposes, but found it unnecessary given the actual seal condition. `seal_evidence` requires every member to be **resolved** (`frozen == True`), not specifically `RETRIEVAL_FETCHED` — `RETRIEVAL_UNUSABLE_SHORT` also counts as resolved. The only way a case gets permanently stuck is an item that **never completes any successful `fetch_evidence` call at all** (permanently reverting). This failure mode is exactly symmetric between creator and community evidence — a required-only fix would just shift the griefing vector onto whichever evidence class was deemed "required." Verified directly by `test_unavailable_creator_evidence_treated_identically`, which shows creator-submitted unfetchable evidence blocks seal exactly the same way community evidence does.
+**Why the original "resolved, not specifically FETCHED" framing wasn't the real problem, and required-lane status was.** The original design's justification — that `RETRIEVAL_UNUSABLE_SHORT` also counted as "resolved," so the failure mode was symmetric between creator and community — was true as far as it went, but missed the actual fix: the defect was never about *which finding counts as resolved*, it was about *treating creator and community evidence as equally load-bearing for sealing at all*. They are not. A fork's creator chose to stand behind their own evidence; a community contributor's evidence is a voluntary addition the fork does not depend on to exist. Making community evidence load-bearing for seal was the mistake, independent of how strict the "resolved" bar was set.
 
-**The actual solution:** `abort_case`, the explicit, auditable escape valve (§17). It does not silently drop the stuck evidence — the record remains permanently readable at `RETRIEVAL_NOT_FETCHED` (verified by `test_abort_recovers_from_permanently_unavailable_evidence`) — it simply lets the case owner give up on this particular case and (implicitly, at a later stage) start a fresh one. Other cases, including a different fork under the same root, are entirely unaffected by one case's abort (`test_case_liveness_after_retrieval_failure`).
+**The corrected model:**
 
-**No silent exclusion.** A `RETRIEVAL_UNUSABLE_SHORT` community item is never hidden or dropped from the sealed evidence set — it is visible, with its honest status, to anyone reading the case (`test_transparent_unusable_status_no_silent_drop`). Stage 6b attaches no semantic penalty to any retrieval outcome; that judgment belongs to Stage 7.
+- **Required lane** (`fork.creator` for `CASE_TYPE_FORK`; *everyone*, i.e. all evidence, for `CASE_TYPE_ROOT_ENVELOPE`, since there is no community concept there): must reach `RETRIEVAL_FETCHED` — not merely resolved. `RETRIEVAL_UNUSABLE_SHORT` **does not** satisfy this (tightened from the original design, not loosened — see §12a).
+- **Non-blocking lane** (community evidence on `CASE_TYPE_FORK` only): any status at all, including permanently `RETRIEVAL_NOT_FETCHED`, is acceptable at seal. **This is the actual fix.** A community contributor cannot force a fork into `abort_case` territory merely by contributing a bad URL — their evidence simply becomes ineligible for the adjudication input set, while the case proceeds normally on schedule set by the required (creator) evidence alone.
 
-## 19. Root / fork parity
+`abort_case` **remains**, but its role narrows to what it should always have been: the escape valve for **required** evidence becoming permanently unfetchable — a self-inflicted problem (the creator's own broken URL, or, for root-envelope cases, any of the single submitter's own URLs), not a third-party griefing vector. Verified: `test_unavailable_community_evidence_does_not_block_seal` (seal succeeds despite a permanently-broken community URL, no abort needed) vs. `test_unavailable_creator_evidence_still_blocks_seal` (creator's own broken URL still requires `abort_case`, exactly as before).
 
-`close_evidence`, `fetch_evidence`, and `abort_case` are fully generic — they operate only on `Case`/`Evidence` records and never branch on `case_type` except to resolve the authorization owner. `seal_evidence` branches on `case.case_type` only for the final `case_fingerprint` computation (§12), since a fork case and a root-envelope case bind genuinely different target-specific identity. Both case types were tested through the full lifecycle (`test_root_envelope_case_full_lifecycle`, `test_fork_case_full_lifecycle`), not just fork fixtures.
+**No silent exclusion, unchanged principle, now doing more work.** A `RETRIEVAL_UNUSABLE_SHORT` or `RETRIEVAL_NOT_FETCHED` community item is never hidden, deleted, or overwritten — it remains visible with its honest status via `membership_fingerprint` and the new `retrieval_disposition_fingerprint` (§12), permanently queryable through `get_evidence`/`list_evidence_of_case`, forever (`test_transparent_unusable_status_no_silent_drop`, `test_creator_cannot_delete_or_overwrite_community_membership`). Only *eligibility for adjudication* is conditional; the record of what was submitted, by whom, and what happened to it, never is. Stage 6b attaches no semantic penalty to any retrieval outcome — a `NOT_FETCHED` community item is not evidence the claim was false, only that no consensus-approved content was committed before this case sealed (`test_no_semantic_penalty_encoded_in_retrieval_outcome`).
 
-## 20. Root `web_content_fingerprint` — populated without a duplicate fetch
+## 18a. Root-envelope parity under the correction
 
-`RootProposal.web_content_fingerprint` keeps its narrow Stage 2B meaning: the fingerprint of the root's own canonical `proposal_url`, never an aggregate. At `seal_evidence` for a `CASE_TYPE_ROOT_ENVELOPE` case, if `root.web_content_fingerprint` is still empty, the contract scans the case's frozen evidence for one whose normalized URL matches the root's normalized `proposal_url` **and** whose `retrieval_status == RETRIEVAL_FETCHED**, and copies that evidence's already-computed `content_fingerprint` — no second `render()` call is ever made for this purpose (verified by `test_no_duplicate_fetch_for_root_canonical_url`, which counts render invocations directly). If the submitter never included the canonical URL as evidence, `web_content_fingerprint` stays `b""` — an honest limitation: V1 does not force-include the canonical URL as mandatory evidence, though submitters are encouraged to do so (`test_root_web_content_fingerprint_stays_empty_if_no_matching_evidence`).
+Root-envelope cases have no separate community-contribution path in V1 — every evidence item submitted via `submit_root_envelope` shares one submitter. Applying "the same reasoning" (per the correction's explicit instruction) to a case type with no community lane means: **all** root-envelope evidence is naturally in the required lane, exactly mirroring how a fork's creator lane behaves. This is not a weaker protection for root-envelope cases — `abort_case` remains available identically for both case types — it is the correct, consistent seal-strictness rule applied uniformly, rather than letting root-envelope evidence tolerate `RETRIEVAL_UNUSABLE_SHORT` while a fork's creator lane does not. `test_root_envelope_seal_rejects_when_required_evidence_unusable_short` and `test_root_envelope_seal_succeeds_when_all_required_fetched` cover this directly.
+
+## 18b. Abort/retry semantics — re-evaluated
+
+- **Does `abort_case` remain needed?** Yes — narrower than before (§18), but still the only tool for a case whose *required* evidence becomes permanently unfetchable.
+- **Exact allowed states:** only `CASE_EVIDENCE_CLOSED` may be aborted. An `CASE_OPEN` case needs no aborting (the owner can simply stop submitting/never close it); a `CASE_CASE_FROZEN` case is immutable by design (`test_abort_frozen_case_rejected`, pre-existing).
+- **Does aborting delete or alter anything?** No. Verified directly (`test_abort_does_not_delete_or_mutate_any_state`): every `Evidence` field and the case's `membership_fingerprint` are byte-identical before and after abort; only `Case.state` changes, to `CASE_ABORTED`.
+- **Is the old case/evidence still queryable?** Yes, permanently, via the same `get_case`/`get_evidence`/`list_evidence_of_case` views as any other case (`test_aborted_case_remains_fully_queryable`).
+- **Can an aborted case adjudicate?** No — `adjudicate` is Stage 7's unimplemented placeholder regardless, but structurally an aborted case's `case_fingerprint` was never sealed (`case_fingerprint == b""` forever), so there is nothing for a future Stage 7 to adjudicate against even once implemented (`test_aborted_case_cannot_adjudicate`).
+- **Is fresh-attempt recovery possible for the same fork/root in V1?** **No, deliberately not implemented.** `fork.evidence_case_id` still points at the aborted case, and `submit_fork_evidence`'s reuse path is gated on `self.cases[case_id].state == CASE_OPEN` (added earlier in Stage 6b to prevent post-close additions) — an aborted case is never `CASE_OPEN` again, so further submission attempts for that fork are permanently rejected (`test_no_fresh_case_recovery_path_in_v1`). **Justification for not building this now:** with the community-bricking defect fixed, the remaining trigger for `abort_case` is narrow and self-inflicted (a creator's own bad URL, or a root importer's own bad URL) — not an adversarial vector requiring urgent mitigation. Building full attempt-numbering (a new `attempt_number` field, preserved-history linking between an aborted case and its successor, an "active attempt" pointer distinct from `fork.evidence_case_id`) is real, non-trivial schema growth for a problem that is now rare and non-adversarial. This is called out as an explicit, acknowledged V1 limitation (§26), not silently accepted.
+- **No ID reuse.** `next_case_id` is monotonic and never rewound on abort; a fresh case for a *different* fork/root always gets a strictly greater ID than any aborted case (`test_no_id_reuse_across_cases`).
+- **Active-case pointer correctness.** `fork.evidence_case_id` continues to point at the (now aborted) case; there is no second, ambiguous pointer to reconcile, precisely because no fresh case can be created for the same fork in V1.
+
+## 19. Root / fork parity (general genericness, beyond §18a's correction-specific point)
+
+`close_evidence`, `fetch_evidence`, and `abort_case` are fully generic — they operate only on `Case`/`Evidence` records and never branch on `case_type` except to resolve the authorization owner. `seal_evidence` branches on `case.case_type` for the required-lane determination (§12a, §18a) and the final `case_fingerprint` computation (§12), since a fork case and a root-envelope case bind genuinely different target-specific identity. Both case types were tested through the full lifecycle (`test_root_envelope_case_full_lifecycle`, `test_fork_case_full_lifecycle`), not just fork fixtures.
+
+## 20. Root `web_content_fingerprint` — **[reconfirmed]** populated only from `RETRIEVAL_FETCHED`, never a duplicate fetch
+
+`RootProposal.web_content_fingerprint` keeps its narrow Stage 2B meaning: the fingerprint of the root's own canonical `proposal_url`, never an aggregate. At `seal_evidence` for a `CASE_TYPE_ROOT_ENVELOPE` case, if `root.web_content_fingerprint` is still empty, the contract scans the case's frozen evidence for one whose normalized URL matches the root's normalized `proposal_url` **and** whose `retrieval_status == RETRIEVAL_FETCHED`, and copies that evidence's already-computed `content_fingerprint` — no second `render()` call is ever made for this purpose (verified by `test_no_duplicate_fetch_for_root_canonical_url`, which counts render invocations directly). If the submitter never included the canonical URL as evidence, `web_content_fingerprint` stays `b""` (`test_root_web_content_fingerprint_stays_empty_if_no_matching_evidence`) — an honest limitation: V1 does not force-include the canonical URL as mandatory evidence, though submitters are encouraged to do so.
+
+**This rule is now structurally, not just behaviorally, guaranteed for root-envelope cases.** Since §18a makes *all* root-envelope evidence required, and required evidence must reach `RETRIEVAL_FETCHED` (never `RETRIEVAL_UNUSABLE_SHORT`) before `seal_evidence` proceeds past its required-lane check, there is no code path where a root-envelope case could ever reach the `web_content_fingerprint` derivation step while its canonical-URL evidence sits at `RETRIEVAL_UNUSABLE_SHORT` — sealing itself would already have been rejected. `test_root_web_content_fingerprint_never_derived_from_unusable_short` verifies this directly: seal is rejected before the derivation logic is ever reached.
 
 ## 21. Pause behavior
 
@@ -170,49 +229,58 @@ CASE_ABORTED                        [terminal, explicit, auditable escape valve]
 ## 22. ABI
 
 **Before Stage 6b:** 29 methods (11 write + 2 admin + 16 view).
-**After Stage 6b:** 31 methods (13 write + 2 admin + 16 view).
+**After Stage 6b (unchanged by the correction):** 31 methods (13 write + 2 admin + 16 view).
 
 Change: `freeze_evidence` and `freeze_case` (Stage 2 placeholders, whose 2-step name/shape never matched the eventual 3-step Close→Fetch→Seal design) removed and replaced with `close_evidence`, `fetch_evidence`, `seal_evidence` (the exact names this stage's own architecture specifies), plus the new `abort_case` escape valve. Net: −2 +4 = **+2 write methods.** No new view methods were needed — `get_case` and `get_evidence` already return the full (now-extended) `Case`/`Evidence` records; a small, justified ABI increase, not an incoherent API.
 
-`submit_root_envelope` and `submit_fork_evidence` (both pre-existing) gained one new parameter each, `render_profiles: DynArray[str]`, a parallel array to the existing evidence arrays — required so the render profile decision genuinely belongs to the submitter (§5), not bolted on elsewhere. This is a signature change to existing methods, not a new method; all call sites across Stages 3–5's test suites were updated accordingly (§25).
+`submit_root_envelope` and `submit_fork_evidence` (both pre-existing) gained one new parameter each, `render_profiles: DynArray[str]`, a parallel array to the existing evidence arrays — required so the render profile decision genuinely belongs to the submitter (§5), not bolted on elsewhere. This is a signature change to existing methods, not a new method.
+
+**The correction added zero new ABI methods.** All fixes (required/non-blocking lane split, disposition fingerprint, cap removal) live entirely inside `seal_evidence`'s existing body and the `Case`/`Evidence` dataclasses' existing field sets (plus one new `Case` field, §12). `close_evidence`, `fetch_evidence`, and `abort_case` needed no signature changes at all.
 
 ## 23. Studio-schema-safe storage design
 
-New `Evidence` fields: `render_profile: str`, `retrieval_status: str`, `frozen_content: str` (bounded to `MAX_EVIDENCE_SLICE`). New `Case` field: `membership_fingerprint: bytes`. All use primitive types (`str`, `bytes`) already accepted by Studio across every prior schema-load gate — no new dataclass nesting, no exotic container shapes, no new decorators. Every canonicalization helper follows the exact `bytes`-buffer-concatenation pattern already validated in Stages 3–4 (`_canonicalize_root`, `_canonicalize_delta`, etc.).
+`Evidence` fields (unchanged by the correction): `render_profile: str`, `retrieval_status: str`, `frozen_content: str` (bounded to `MAX_EVIDENCE_SLICE`). `Case` fields: `membership_fingerprint: bytes` (from the original Stage 6b design) plus **`retrieval_disposition_fingerprint: bytes` (new, added by this correction)**. All use primitive types (`str`, `bytes`) already accepted by Studio across every prior schema-load gate — no new dataclass nesting, no exotic container shapes, no new decorators. Every canonicalization helper (including the new `_canonicalize_retrieval_disposition`/`_retrieval_disposition_fingerprint`) follows the exact `bytes`-buffer-concatenation pattern already validated in Stages 3–4.
 
-## 24. Local test suite (`tests/test_stage_6b.py`, 67 tests)
+## 24. Local test suite (`tests/test_stage_6b.py`, 84 tests)
 
-**LOCAL LOGIC TESTS ONLY**, explicitly labeled in the file's own docstring and in every relevant test/helper name. They exercise the contract's deterministic storage, fingerprint, and lifecycle logic using a mocked `gl.nondet.web.render` (`tests/_genlayer_shim.py`'s new `_MockWebRegistry` — configurable per-URL responses or failures, `strict_eq` implemented as a direct call with no simulated consensus/rotation/Undetermined). **They do not exercise, simulate, or prove anything about live render() behavior, consensus outcomes, or Undetermined handling.** That is Stage 6a's exclusive domain, and its live evidence (`docs/STAGE_6A_WEB_RENDER_PROBE_REPORT.md`) is not re-derived or re-claimed by any test in this file.
+**LOCAL LOGIC TESTS ONLY**, explicitly labeled in the file's own docstring and in every relevant test/helper name. They exercise the contract's deterministic storage, fingerprint, and lifecycle logic using a mocked `gl.nondet.web.render` (`tests/_genlayer_shim.py`'s `_MockWebRegistry` — configurable per-URL responses or failures, `strict_eq` implemented as a direct call with no simulated consensus/rotation/Undetermined). **They do not exercise, simulate, or prove anything about live render() behavior, consensus outcomes, or Undetermined handling.** That is Stage 6a's exclusive domain, and its live evidence (`docs/STAGE_6A_WEB_RENDER_PROBE_REPORT.md`) is not re-derived or re-claimed by any test in this file.
 
-Coverage: `close_evidence` (7 tests — zero-evidence rejection, membership fixing, no-additions-after-close, double-close rejection, unknown-case rejection, both authorization paths, pause gating), `fetch_evidence` (12 tests — pre-close rejection, unknown-evidence rejection, exact content freezing, fingerprint-matches-stored-content, no-overwrite, failure leaves record unfetched, failed fetch retriable, empty/below-threshold/at-threshold length gating, slicing to the cap, cross-case isolation, permissionless + pause-immunity, dynamic-profile routing), `seal_evidence` (8 tests — pre-close rejection, incomplete-fetch rejection, success with a mix of usable/unusable, deterministic fingerprint computation, no-repeat, no-partial-freeze-on-reject, target-fingerprint stability, permissionless + pause-immunity, total-content-cap enforcement), `abort_case` (6 tests — open-case rejection, closed-case success, frozen-case rejection, authorization, the griefing-recovery scenario, pause gating), community-griefing scenarios (4 tests — unavailable community evidence doesn't block other items and is abortable, unavailable creator evidence treated identically, transparent unusable status with no silent drop, case liveness after one case's retrieval failure), render profile (6 tests), fingerprints (7 tests — stability, content sensitivity, hashlib-reference match, membership order sensitivity, evidence-set content sensitivity, case-fingerprint target sensitivity, case-fingerprint full-envelope binding), root/fork parity (5 tests — both full lifecycles, web_content_fingerprint derivation and its empty-when-unmatched case, no-duplicate-fetch), prohibited behavior (7 tests — no `web.get`/semantic prompts/`gl.message.value`/`transfer(`, presence of `render`+`strict_eq`, AST-verified absence of try/except around the nondet call, `adjudicate` still unimplemented, `finalize` still an untouched Stage-2 placeholder).
+**Tests added or rewritten by the correction (17 net new, from 67 to 84):**
 
-**Two real bugs found and fixed while building this suite**, both documented rather than silently patched:
+- `SealEvidenceTests`: rewrote the old "seal succeeds when all resolved including unusable" test into two explicit root-envelope tests (rejects on required `UNUSABLE_SHORT`; succeeds when all required `FETCHED`); added fork-side tests for community-non-blocking success with `NOT_FETCHED`/`UNUSABLE_SHORT` community items, creator-`UNUSABLE_SHORT` still blocking, community success not substituting for a missing creator item; removed the now-invalid `test_total_content_cap_blocks_seal`; added the theoretical-max-bound test and a large-immutable-content-never-blocks-seal adversarial-shaped test.
+- `CommunityGriefingTests`: rewrote the two core tests to assert the corrected outcome (community failure → seal succeeds, no abort needed; creator failure → seal still blocked, abort still needed); added tests for adjudication-set inclusion of `FETCHED` community evidence, exclusion of non-eligible records from the adjudication set with an explicit fingerprint comparison, disposition-fingerprint accuracy, structural non-deletability of community records, and structural absence of any semantic-verdict vocabulary inside `seal_evidence`'s own source.
+- `AbortCaseTests`: added full queryability-after-abort, no-mutation-on-abort, cannot-adjudicate-after-abort, no-fresh-case-recovery-path (documenting the deliberate V1 limitation), and no-ID-reuse-across-cases tests.
+- `RootForkParityTests`: added the explicit test proving `web_content_fingerprint` can never be derived from `RETRIEVAL_UNUSABLE_SHORT` content (§20).
 
-1. **Pre-existing Stage 5 bug**: `submit_fork_evidence` never populated `Case.evidence_ids` — only the separate `evidence_by_case` index — since Stage 5's own tests checked the index, never the field directly. Harmless until Stage 6b's `close_evidence`/`seal_evidence` began reading `case.evidence_ids` directly. Fixed by appending to both in lockstep.
-2. **This stage's own gap, caught by its own test**: the initial `_canonicalize_case_root_envelope` bound only 4 of the envelope's 8 fields, so two envelopes differing solely in `mutable_dimensions`/`immutable_dimensions` produced identical `case_fingerprint`s. Fixed to bind the complete frozen envelope (§12).
+**Two real bugs found and fixed while building the original suite** (unchanged by this correction, restated for the record):
+
+1. **Pre-existing Stage 5 bug**: `submit_fork_evidence` never populated `Case.evidence_ids` — only the separate `evidence_by_case` index. Fixed by appending to both in lockstep.
+2. **Stage 6b's own gap, caught by its own test**: the initial `_canonicalize_case_root_envelope` bound only 4 of the envelope's 8 fields. Fixed to bind the complete frozen envelope.
 
 ## 25. Regression across every prior stage
 
-- Stage 3, 4, 5 test suites (148 tests) updated for the `render_profiles` parameter addition and the removed `freeze_evidence` placeholder, then re-verified green.
-- `tests/stage_2_checks.py` updated: ABI-count expectation raised to 13/16/2/31; the "no prohibited calls" check's baseline shifted to permit `gl.nondet.web.render(`/`gl.eq_principle.strict_eq(` while continuing to ban `web.get(`, `prompt_comparative`, `prompt_non_comparative`, `exec_prompt`, `transfer(` — with a positive assertion that `render`/`strict_eq` are actually present (so the claim isn't merely "nothing forbidden," but "the sanctioned pathway is genuinely used").
-- `tests/stage_6a_probe_checks.py`'s "production contract unaffected" check updated: its premise (zero `gl.nondet.*` in production) was Stage 6a-era and correctly superseded by Stage 6b's approved outcome; narrowed to what actually still matters — production never references the isolated probe file, never falls back to `web.get(`.
-- **Full regression: 215 tests (51 + 51 + 46 + 67) pass. 11/11 Stage 2 static checks pass. 13/13 Stage 6a probe checks pass.**
+- Stage 3, 4, 5 test suites (148 tests, unchanged by this correction) remain green.
+- `tests/stage_2_checks.py`: ABI-count expectation (13/16/2/31) and the render/strict_eq baseline are unchanged by this correction — the fix touched no ABI surface.
+- `tests/stage_6a_probe_checks.py`: unchanged.
+- **Full regression after the correction: 232 tests (51 + 51 + 46 + 84) pass. 11/11 Stage 2 static checks pass. 13/13 Stage 6a probe checks pass.**
 
 ## 26. Known limitations
 
 - Native GEN read/transfer remains `DOCUMENTED BUT NOT LIVE VERIFIED`/`UNKNOWN` — unchanged, out of scope here.
-- No trusted timestamp source — `close_evidence` stays owner-gated rather than time-windowed (§17).
-- `WEBPAGE_LOAD_FAILED` exception-catching remains unverified and deliberately unused (§7) — a future stage could revisit this if it becomes genuinely important and is properly live-verified first.
-- `MAX_FROZEN_CONTENT_PER_CASE = 65536` is provisional, based on single-source Stage 6a data, not multi-evidence live stress data (§11).
-- No mechanism yet exists for a fork/root whose case was aborted to "try again" with a fresh case under the same fork/root — `Fork.status`/`RootProposal.envelope_status` are untouched by `abort_case` by design (staying minimal, avoiding overreach into finalization). A stuck fork after abort has no automatic recovery path in V1; this is an accepted, documented gap for a later stage.
-- `close_evidence`'s owner-only gate means a case with only community evidence and an unresponsive fork creator cannot be closed at all — a liveness gap symmetric to the one griefing-mitigation (§18) solves on the *seal* side, but not addressed on the *close* side in V1.
+- No trusted timestamp source — `close_evidence` stays owner-gated rather than time-windowed (§17). **Not fixed by this correction** — `close_evidence`'s owner-only gate still means a case with only community evidence submitted so far and an unresponsive fork creator cannot be closed at all. This is a distinct liveness gap from the one this correction fixes (which was about *sealing* an already-closed case, not *closing* one) and remains open.
+- `WEBPAGE_LOAD_FAILED` exception-catching remains unverified and deliberately unused (§7).
+- **[RESOLVED by this correction]** ~~`MAX_FROZEN_CONTENT_PER_CASE` provisional cap~~ — removed entirely (§11). No replacement cap; the pre-existing `MAX_EVIDENCE_PER_CASE × MAX_EVIDENCE_SLICE` bound was always sufficient.
+- **[RESOLVED by this correction]** ~~Community evidence could brick a case's seal~~ — community evidence is now non-blocking at seal (§12a, §18). The only remaining trigger for `abort_case` is required (creator, or all-of-root-envelope) evidence becoming permanently unfetchable — a narrower, self-inflicted, non-adversarial scenario.
+- No fresh-case recovery path for a fork/root whose case was aborted (§18b) — deliberately not built in V1, justified by the narrowed, non-adversarial nature of the remaining `abort_case` trigger. Still an accepted, documented gap for a later stage if it proves needed in practice.
 
 ## 27. Stage 7 handoff
 
 Stage 7 (semantic adjudication, not started) can rely on:
 
-- `Case.case_fingerprint` uniquely and completely identifying one frozen adjudication input (target identity + membership + evidence content, all immutable).
-- `Evidence.frozen_content` as the exact, permanent text to reason over — never a live refetch.
-- `Evidence.retrieval_status` distinguishing usable (`RETRIEVAL_FETCHED`) from resolved-but-unusable (`RETRIEVAL_UNUSABLE_SHORT`) evidence, with neither carrying an implicit semantic verdict.
-- `RootProposal.web_content_fingerprint` as a narrow, honest signal (may legitimately be empty).
-- The atomicity guarantee that `CASE_CASE_FROZEN` is truly terminal and complete — no partial evidence, no partial fingerprint, ever.
+- `Case.case_fingerprint` uniquely and completely identifying one frozen adjudication input (target identity + membership + retrieval disposition + adjudication-eligible evidence content, all immutable).
+- `Case.evidence_set_fingerprint` identifying exactly the adjudication-eligible evidence subset — the set Stage 7 is actually allowed to consume. **Not** the full membership; community items that never reached `RETRIEVAL_FETCHED` are excluded here even though they remain in `Case.membership_fingerprint`/`Case.retrieval_disposition_fingerprint`.
+- `Case.retrieval_disposition_fingerprint` as the complete, honest record of what happened to *every* submitted item, including ones Stage 7 will never see content for. Useful for a future Explorer/audit view, not for adjudication input selection.
+- `Evidence.frozen_content` as the exact, permanent text to reason over for eligible evidence — never a live refetch.
+- `Evidence.retrieval_status` distinguishing usable (`RETRIEVAL_FETCHED`) from resolved-but-unusable (`RETRIEVAL_UNUSABLE_SHORT`) from never-resolved (`RETRIEVAL_NOT_FETCHED`) evidence, none carrying an implicit semantic verdict.
+- `RootProposal.web_content_fingerprint` as a narrow, honest signal (may legitimately be empty), now structurally guaranteed to only ever come from `RETRIEVAL_FETCHED` content (§20).
+- The atomicity guarantee that `CASE_CASE_FROZEN` is truly terminal and complete — no partial evidence, no partial fingerprint, ever — and that reaching it no longer depends on community evidence resolving at all, only on required evidence doing so.
