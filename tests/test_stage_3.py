@@ -51,7 +51,8 @@ def _evidence_bundle(urls=("https://gov.example.com/prop/1",),
                      classes=None,
                      rel=None,
                      auth=None,
-                     tm=None):
+                     tm=None,
+                     render_profiles=None):
     n = len(urls)
     if classes is None:
         classes = (gf.EC_OFFICIAL_GOVERNANCE,) * n
@@ -61,12 +62,15 @@ def _evidence_bundle(urls=("https://gov.example.com/prop/1",),
         auth = ("official DAO source",) * n
     if tm is None:
         tm = ("2026-01-01",) * n
+    if render_profiles is None:
+        render_profiles = (gf.RENDER_PROFILE_STANDARD,) * n
     return (
         shim.DynArray(urls),
         shim.DynArray(classes),
         shim.DynArray(rel),
         shim.DynArray(auth),
         shim.DynArray(tm),
+        shim.DynArray(render_profiles),
     )
 
 
@@ -336,9 +340,9 @@ class IntentEnvelopeTests(unittest.TestCase):
 
     def test_successful_submission_transitions_status(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         case_id = c.submit_root_envelope(
-            rid, _envelope(), urls, cls, rel, auth, tm
+            rid, _envelope(), urls, cls, rel, auth, tm, rp
         )
         r = c.get_root_proposal(rid)
         self.assertEqual(r.envelope_status, gf.ENVELOPE_EVIDENCE_OPEN)
@@ -348,90 +352,90 @@ class IntentEnvelopeTests(unittest.TestCase):
 
     def test_root_missing_rejected(self):
         c = _fresh()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
-            c.submit_root_envelope(shim.u256(99), _envelope(), urls, cls, rel, auth, tm)
+            c.submit_root_envelope(shim.u256(99), _envelope(), urls, cls, rel, auth, tm, rp)
 
     def test_objective_bound_enforced(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         long_obj = "x" * (gf.MAX_OBJECTIVE_LEN + 1)
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(objective=long_obj), urls, cls, rel, auth, tm
+                rid, _envelope(objective=long_obj), urls, cls, rel, auth, tm, rp
             )
 
     def test_empty_objective_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(objective=""), urls, cls, rel, auth, tm
+                rid, _envelope(objective=""), urls, cls, rel, auth, tm, rp
             )
 
     def test_bad_resource_type_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(resource_type="INVALID"), urls, cls, rel, auth, tm
+                rid, _envelope(resource_type="INVALID"), urls, cls, rel, auth, tm, rp
             )
 
     def test_essential_constraint_cap(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         big = tuple(f"c{i}" for i in range(gf.MAX_ESSENTIAL_CONSTRAINT_ITEMS + 1))
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(essential=big), urls, cls, rel, auth, tm
+                rid, _envelope(essential=big), urls, cls, rel, auth, tm, rp
             )
 
     def test_mutable_immutable_overlap_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
                 _envelope(mutable=("allocation",), immutable=("allocation",)),
-                urls, cls, rel, auth, tm,
+                urls, cls, rel, auth, tm, rp,
             )
 
     def test_duplicate_mutable_dimension_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
                 _envelope(mutable=("allocation", "allocation")),
-                urls, cls, rel, auth, tm,
+                urls, cls, rel, auth, tm, rp,
             )
 
     def test_duplicate_immutable_dimension_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
                 _envelope(immutable=("beneficiary_class", "beneficiary_class")),
-                urls, cls, rel, auth, tm,
+                urls, cls, rel, auth, tm, rp,
             )
 
     def test_second_active_envelope_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
-        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
-        urls2, cls2, rel2, auth2, tm2 = _evidence_bundle(
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
+        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+        urls2, cls2, rel2, auth2, tm2, rp2 = _evidence_bundle(
             urls=("https://gov.example.com/prop/1?v=2",),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls2, cls2, rel2, auth2, tm2)
+            c.submit_root_envelope(rid, _envelope(), urls2, cls2, rel2, auth2, tm2, rp2)
 
     def test_empty_essential_constraint_rejected(self):
         c, did, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(essential=("",)), urls, cls, rel, auth, tm
+                rid, _envelope(essential=("",)), urls, cls, rel, auth, tm, rp
             )
 
 
@@ -444,14 +448,14 @@ class EvidenceMetadataTests(unittest.TestCase):
 
     def test_successful_metadata_stored_frozen_false(self):
         c, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle(
+        urls, cls, rel, auth, tm, rp = _evidence_bundle(
             urls=(
                 "https://gov.example.com/prop/1",
                 "https://forum.example.com/thread/9",
             ),
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_GOVERNANCE_DISCUSSION),
         )
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
         page = c.list_evidence_of_case(case_id, shim.u256(0), shim.u32(50))
         ids = [int(x) for x in page.items]
         self.assertEqual(len(ids), 2)
@@ -464,18 +468,18 @@ class EvidenceMetadataTests(unittest.TestCase):
     def test_evidence_cap_enforced(self):
         c, rid = self._prep()
         n = gf.MAX_EVIDENCE_PER_CASE + 1
-        urls, cls, rel, auth, tm = _evidence_bundle(
+        urls, cls, rel, auth, tm, rp = _evidence_bundle(
             urls=tuple(f"https://ex.com/{i}" for i in range(n)),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
 
     def test_at_least_one_evidence_required(self):
         c, rid = self._prep()
         empty = shim.DynArray([])
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(), empty, empty, empty, empty, empty
+                rid, _envelope(), empty, empty, empty, empty, empty, empty
             )
 
     def test_normalized_url_duplicate_rejected(self):
@@ -483,7 +487,7 @@ class EvidenceMetadataTests(unittest.TestCase):
         # case-normalized; path and query are preserved verbatim. So the
         # dedup collision is on scheme+host, not on path-case.
         c, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle(
+        urls, cls, rel, auth, tm, rp = _evidence_bundle(
             urls=(
                 "https://example.com/foo",
                 "HTTPS://Example.com/foo",
@@ -491,26 +495,26 @@ class EvidenceMetadataTests(unittest.TestCase):
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
 
     def test_distinct_path_case_NOT_deduped(self):
         # Stage 5 correction: path is case-sensitive; two URLs differing only
         # by path case are DIFFERENT resources and must NOT be deduped.
         c, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle(
+        urls, cls, rel, auth, tm, rp = _evidence_bundle(
             urls=(
                 "https://example.com/foo",
                 "https://example.com/FOO",
             ),
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
         )
-        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)  # no raise
+        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)  # no raise
 
     def test_bad_evidence_class_rejected(self):
         c, rid = self._prep()
-        urls, cls, rel, auth, tm = _evidence_bundle(classes=("BOGUS",))
+        urls, cls, rel, auth, tm, rp = _evidence_bundle(classes=("BOGUS",))
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
 
     def test_evidence_array_lengths_must_match(self):
         c, rid = self._prep()
@@ -519,8 +523,9 @@ class EvidenceMetadataTests(unittest.TestCase):
         rel = shim.DynArray(["r", "r"])
         auth = shim.DynArray(["a", "a"])
         tm = shim.DynArray(["t", "t"])
+        rp = shim.DynArray([gf.RENDER_PROFILE_STANDARD, gf.RENDER_PROFILE_STANDARD])
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
 
 
 class CaseAndIndexTests(unittest.TestCase):
@@ -528,8 +533,8 @@ class CaseAndIndexTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
-        urls, cls, rel, auth, tm = _evidence_bundle()
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
+        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
         case = c.get_case(case_id)
         self.assertEqual(case.case_type, gf.CASE_TYPE_ROOT_ENVELOPE)
         self.assertEqual(int(case.target_id), int(rid))
@@ -559,12 +564,18 @@ class CaseAndIndexTests(unittest.TestCase):
 
 
 class ProhibitedBehaviorTests(unittest.TestCase):
-    def test_source_has_no_nondet_calls(self):
+    def test_source_has_no_disallowed_nondet_or_gen_calls(self):
+        # Stage 6b baseline: gl.nondet.web.render(...) + gl.eq_principle.
+        # strict_eq(...) are now legitimate (fetch_evidence only).
+        # web.get, semantic prompts, and native GEN transfer remain banned.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("gl.nondet.", "web.render(", "web.get(",
-                       "gl.eq_principle.", "gl.nondet.exec_prompt", "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
+                       "gl.eq_principle.prompt_non_comparative",
+                       "gl.nondet.exec_prompt", "transfer("):
             self.assertNotIn(banned, src, f"banned substring present: {banned}")
+        self.assertIn("gl.nondet.web.render(", src)
+        self.assertIn("gl.eq_principle.strict_eq(", src)
 
     def test_source_has_no_gl_message_value(self):
         import pathlib

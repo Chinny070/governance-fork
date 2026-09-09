@@ -73,6 +73,7 @@ def _root_evidence_bundle():
         shim.DynArray(["original proposal"]),
         shim.DynArray(["official DAO source"]),
         shim.DynArray(["2026-01-01"]),
+        shim.DynArray([gf.RENDER_PROFILE_STANDARD]),
     )
 
 
@@ -88,8 +89,8 @@ def _fresh_with_fork():
         did, "EP", "T", "https://x/1",
         _params([("allocation", "100000"), ("duration", "6 months")]),
     )
-    urls, cls, rel, auth, tm = _root_evidence_bundle()
-    c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm)
+    urls, cls, rel, auth, tm, rp = _root_evidence_bundle()
+    c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
     # ---- test-harness flip ONLY ----
     r = c.get_root_proposal(rid)
     r.envelope_status = gf.ENVELOPE_FAITHFUL
@@ -109,17 +110,19 @@ def _one_evidence(url="https://a.example.com/p1",
                   ec=gf.EC_OFFICIAL_GOVERNANCE,
                   rel="original",
                   auth="official",
-                  tm="2026-01-01"):
+                  tm="2026-01-01",
+                  rp=gf.RENDER_PROFILE_STANDARD):
     return (
         shim.DynArray([url]),
         shim.DynArray([ec]),
         shim.DynArray([rel]),
         shim.DynArray([auth]),
         shim.DynArray([tm]),
+        shim.DynArray([rp]),
     )
 
 
-def _many_evidence(urls, ec=None, rel=None, auth=None, tm=None):
+def _many_evidence(urls, ec=None, rel=None, auth=None, tm=None, rp=None):
     n = len(urls)
     if ec is None:
         ec = [gf.EC_OFFICIAL_GOVERNANCE] * n
@@ -129,12 +132,15 @@ def _many_evidence(urls, ec=None, rel=None, auth=None, tm=None):
         auth = ["a"] * n
     if tm is None:
         tm = ["t"] * n
+    if rp is None:
+        rp = [gf.RENDER_PROFILE_STANDARD] * n
     return (
         shim.DynArray(list(urls)),
         shim.DynArray(list(ec)),
         shim.DynArray(list(rel)),
         shim.DynArray(list(auth)),
         shim.DynArray(list(tm)),
+        shim.DynArray(list(rp)),
     )
 
 
@@ -147,8 +153,8 @@ class CreatorQuotaTests(unittest.TestCase):
     def test_creator_first_submission_creates_case_and_transitions_status(self):
         c, did, rid, fid, creator = _fresh_with_fork()
         shim.set_sender(creator)
-        urls, ec, rel, auth, tm = _one_evidence()
-        case_id = c.submit_fork_evidence(fid, urls, ec, rel, auth, tm)
+        urls, ec, rel, auth, tm, rp = _one_evidence()
+        case_id = c.submit_fork_evidence(fid, urls, ec, rel, auth, tm, rp)
         f = c.get_fork(fid)
         self.assertEqual(f.status, gf.FORK_EVIDENCE_OPEN)
         self.assertEqual(int(f.evidence_case_id), int(case_id))
@@ -167,10 +173,10 @@ class CreatorQuotaTests(unittest.TestCase):
     def test_creator_may_append_and_reuses_case(self):
         c, did, rid, fid, creator = _fresh_with_fork()
         shim.set_sender(creator)
-        urls1, ec1, rel1, auth1, tm1 = _one_evidence("https://a.example.com/p1")
-        case_id1 = c.submit_fork_evidence(fid, urls1, ec1, rel1, auth1, tm1)
-        urls2, ec2, rel2, auth2, tm2 = _one_evidence("https://a.example.com/p2")
-        case_id2 = c.submit_fork_evidence(fid, urls2, ec2, rel2, auth2, tm2)
+        urls1, ec1, rel1, auth1, tm1, rp1 = _one_evidence("https://a.example.com/p1")
+        case_id1 = c.submit_fork_evidence(fid, urls1, ec1, rel1, auth1, tm1, rp1)
+        urls2, ec2, rel2, auth2, tm2, rp2 = _one_evidence("https://a.example.com/p2")
+        case_id2 = c.submit_fork_evidence(fid, urls2, ec2, rel2, auth2, tm2, rp2)
         self.assertEqual(int(case_id1), int(case_id2))
         # Only one case created
         counters = c.fork_case_counters[case_id1]
@@ -190,9 +196,9 @@ class CreatorQuotaTests(unittest.TestCase):
         urls = [f"https://a.example.com/p{i}" for i in range(gf.CREATOR_EVIDENCE_CAP)]
         c.submit_fork_evidence(fid, *_many_evidence(urls))
         shim.set_sender(creator)
-        extra_urls, ec, rel, auth, tm = _one_evidence("https://a.example.com/extra")
+        extra_urls, ec, rel, auth, tm, rp = _one_evidence("https://a.example.com/extra")
         with self.assertRaises(UserError) as ctx:
-            c.submit_fork_evidence(fid, extra_urls, ec, rel, auth, tm)
+            c.submit_fork_evidence(fid, extra_urls, ec, rel, auth, tm, rp)
         self.assertIn("CREATOR_EVIDENCE_CAP", str(ctx.exception))
 
     def test_creator_cannot_consume_community_reserve(self):
@@ -204,9 +210,9 @@ class CreatorQuotaTests(unittest.TestCase):
         urls = [f"https://a.example.com/p{i}" for i in range(gf.CREATOR_EVIDENCE_CAP)]
         c.submit_fork_evidence(fid, *_many_evidence(urls))
         shim.set_sender(creator)
-        urls2, ec2, rel2, auth2, tm2 = _one_evidence("https://a.example.com/extra")
+        urls2, ec2, rel2, auth2, tm2, rp2 = _one_evidence("https://a.example.com/extra")
         with self.assertRaises(UserError):
-            c.submit_fork_evidence(fid, urls2, ec2, rel2, auth2, tm2)
+            c.submit_fork_evidence(fid, urls2, ec2, rel2, auth2, tm2, rp2)
 
 
 # ============================================================================
@@ -219,8 +225,8 @@ class CommunityQuotaTests(unittest.TestCase):
         c, did, rid, fid, creator = _fresh_with_fork()
         outsider = shim.Address("0x" + "dd" * 20)
         shim.set_sender(outsider)
-        urls, ec, rel, auth, tm = _one_evidence("https://b.example.com/p1")
-        case_id = c.submit_fork_evidence(fid, urls, ec, rel, auth, tm)
+        urls, ec, rel, auth, tm, rp = _one_evidence("https://b.example.com/p1")
+        case_id = c.submit_fork_evidence(fid, urls, ec, rel, auth, tm, rp)
         counters = c.fork_case_counters[case_id]
         self.assertEqual(int(counters.creator_count), 0)
         self.assertEqual(int(counters.community_count), 1)
@@ -513,10 +519,11 @@ class AtomicityTests(unittest.TestCase):
         rel = shim.DynArray(["r", "r"])
         auth = shim.DynArray(["a", "a"])
         tm = shim.DynArray(["t", "t"])
+        rp = shim.DynArray([gf.RENDER_PROFILE_STANDARD, gf.RENDER_PROFILE_STANDARD])
         prior_case_counter = int(c.next_case_id)
         prior_ev_counter = int(c.next_evidence_id)
         with self.assertRaises(UserError):
-            c.submit_fork_evidence(fid, urls, ec, rel, auth, tm)
+            c.submit_fork_evidence(fid, urls, ec, rel, auth, tm, rp)
         # Case must NOT have been created, counters unchanged, fork status
         # still DRAFT.
         self.assertEqual(int(c.next_case_id), prior_case_counter)
@@ -594,8 +601,8 @@ class RootEnvelopeStillWorksTests(unittest.TestCase):
         c = gf.Contract(shim.Address("0x" + "aa" * 20))
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
-        urls, ec, rel, auth, tm = _root_evidence_bundle()
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, ec, rel, auth, tm)
+        urls, ec, rel, auth, tm, rp = _root_evidence_bundle()
+        case_id = c.submit_root_envelope(rid, _envelope(), urls, ec, rel, auth, tm, rp)
         r = c.get_root_proposal(rid)
         self.assertEqual(r.envelope_status, gf.ENVELOPE_EVIDENCE_OPEN)
         self.assertEqual(int(r.envelope_case_id), int(case_id))
@@ -629,25 +636,20 @@ class FaithfulGateUnchangedTests(unittest.TestCase):
 
 
 class ProhibitedBehaviorTests(unittest.TestCase):
-    def test_no_nondet(self):
+    def test_no_disallowed_nondet_or_gen_calls(self):
+        # Stage 6b baseline: gl.nondet.web.render + gl.eq_principle.strict_eq
+        # are now legitimate (fetch_evidence only).
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("gl.nondet.", "web.render(", "web.get(",
-                       "gl.eq_principle.", "gl.nondet.exec_prompt", "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
+                       "gl.eq_principle.prompt_non_comparative",
+                       "gl.nondet.exec_prompt", "transfer("):
             self.assertNotIn(banned, src, banned)
 
     def test_no_gl_message_value(self):
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
         self.assertNotIn("gl.message.value", src)
-
-    def test_no_freeze_evidence_implementation(self):
-        # freeze_evidence stays raising in Stage 5 (real freeze arrives in
-        # Stage 6b together with the actual retrieval pathway).
-        shim.reset_message_context()
-        c = gf.Contract(shim.Address("0x" + "aa" * 20))
-        with self.assertRaises(UserError):
-            c.freeze_evidence(shim.u256(1))
 
     def test_no_adjudicate_implementation(self):
         shim.reset_message_context()

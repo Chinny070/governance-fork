@@ -63,6 +63,32 @@ MAX_EVIDENCE_BATCH = 8
 ADJUDICATION_DIMENSIONS_VERSION_FORK = 1
 ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE = 1
 
+# Stage 6b: production evidence retrieval and freeze.
+#
+# Deterministic minimum-usefulness gate. Stage 6a observed genuinely empty
+# (0-char) renders as a real, committable outcome (Accepted consensus,
+# content_length=0). 32 chars is far shorter than any real sentence
+# fragment; it separates "nothing useful rendered" from "something
+# rendered" without risking rejection of legitimately terse evidence.
+# This is a length check only -- Stage 6b makes no semantic usefulness
+# judgment.
+MIN_USEFUL_CONTENT_LEN = 32
+
+# Case-level total frozen-content cap. PROVISIONAL: derived from Stage 6a's
+# largest single observed source (SOURCE_2_TALLY, 12955 chars, ~79% of the
+# 16384-char per-evidence bound) with roughly a 4x margin, giving headroom
+# for several rich evidence items per case without approaching the
+# theoretical worst case of 16 * 16384 = 262144 chars. Marked provisional;
+# revisit with a later live stress gate once Stage 6b sees real multi-
+# evidence cases at scale.
+MAX_FROZEN_CONTENT_PER_CASE = 65536
+
+# Fixed, contract-controlled wait duration for RENDER_PROFILE_DYNAMIC.
+# Never caller-supplied -- Stage 6a's negative-control and instability
+# findings apply to THIS exact duration; an arbitrary caller-chosen wait
+# would be untested and unbounded.
+DYNAMIC_WAIT_SECONDS = "5s"
+
 
 # =========================================================================
 # Enum values (string constants; fields typed `str` in dataclasses)
@@ -113,13 +139,36 @@ CASE_TYPE_CHALLENGE = "CHALLENGE"
 
 # Case state
 CASE_OPEN = "OPEN"
-CASE_EVIDENCE_FROZEN = "EVIDENCE_FROZEN"
-CASE_CASE_FROZEN = "CASE_FROZEN"
+# Stage 6b: evidence membership locked; individual fetch_evidence calls
+# permitted. New state -- none of the Stage 2-reserved names meant this.
+CASE_EVIDENCE_CLOSED = "EVIDENCE_CLOSED"
+CASE_EVIDENCE_FROZEN = "EVIDENCE_FROZEN"  # reserved; not used as a Case.state
+                                          # value by Stage 6b -- see docs.
+CASE_CASE_FROZEN = "CASE_FROZEN"  # Stage 6b's seal_evidence terminal state.
 CASE_ADJUDICATING = "ADJUDICATING"
 CASE_SUCCESS = "SUCCESS"
 CASE_UNDETERMINED = "UNDETERMINED"
 CASE_UNDETERMINED_TERMINAL = "UNDETERMINED_TERMINAL"
 CASE_INVALID = "INVALID"
+# Stage 6b: explicit, auditable escape valve for a closed case that can
+# never seal (e.g. a member evidence URL becomes permanently unavailable).
+CASE_ABORTED = "ABORTED"
+
+# Stage 6b: evidence retrieval status. Deterministic and committable only
+# -- there is no "UNAVAILABLE" value here. A render() call that fails
+# (WEBPAGE_LOAD_FAILED, Undetermined, or any other failure) does not let
+# this contract commit any outcome for that attempt; the evidence simply
+# remains RETRIEVAL_NOT_FETCHED and may be retried. See
+# docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md for the reasoning.
+RETRIEVAL_NOT_FETCHED = "NOT_FETCHED"
+RETRIEVAL_FETCHED = "FETCHED"
+RETRIEVAL_UNUSABLE_SHORT = "UNUSABLE_SHORT"
+
+# Stage 6b: bounded, contract-controlled render profiles. The submitter
+# selects one of these two values only -- never an arbitrary mode, wait
+# duration, or renderer option.
+RENDER_PROFILE_STANDARD = "STANDARD"
+RENDER_PROFILE_DYNAMIC = "DYNAMIC"
 
 # Verdict
 VERDICT_FAITHFUL = "FAITHFUL"
@@ -229,6 +278,11 @@ _ALLOWED_EVIDENCE_CLASSES = (
     EC_IMPLEMENTATION_SPEC,
     EC_AUDIT,
     EC_THIRD_PARTY_ANALYSIS,
+)
+
+_ALLOWED_RENDER_PROFILES = (
+    RENDER_PROFILE_STANDARD,
+    RENDER_PROFILE_DYNAMIC,
 )
 
 
@@ -528,6 +582,118 @@ def _body_fingerprint(dao_id_int, root_id_int, parent_kind, parent_id_int,
 
 
 # =========================================================================
+# Evidence retrieval and freeze machinery (Stage 6b). Pure helpers only.
+#
+# Layered fingerprint model (documented in full in
+# docs/STAGE_6B_PRODUCTION_EVIDENCE_FREEZE.md):
+#   Evidence.content_fingerprint = SHA-256(bounded_rendered_text) alone.
+#     Pure content identity -- reproducible by anyone who fetches the same
+#     URL under the same render profile and hashes the result.
+#   Case.membership_fingerprint  = binds WHICH evidence (id, url, profile,
+#     submitter, class) was closed into the case, before any content exists.
+#   Case.evidence_set_fingerprint = binds each evidence's content identity
+#     and retrieval outcome, in membership order, after all fetches resolve.
+#   Case.case_fingerprint = binds target-specific identity (fork or root
+#     envelope) plus both of the above. This is what Stage 7 adjudicates
+#     against.
+# Content identity, source identity, and case identity are never blurred
+# into a single field.
+# =========================================================================
+
+def _content_fingerprint(bounded_text: str) -> bytes:
+    return _sha256(bounded_text.encode("utf-8"))
+
+
+def _canonicalize_membership(case_id_int, evidence_id_list, evidence_lookup):
+    # Order = case.evidence_ids order (submission order), NOT re-sorted.
+    # Membership order is itself part of the deterministic record.
+    buf = b"gf-case-membership/v1\n"
+    buf = buf + b"case_id=" + str(case_id_int).encode("ascii") + b"\n"
+    buf = buf + b"members=\n"
+    for eid in evidence_id_list:
+        ev = evidence_lookup(eid)
+        buf = buf + b"  id:" + str(int(eid)).encode("ascii") + b"\n"
+        buf = buf + b"  url:" + _normalize_url(ev.url).encode("utf-8") + b"\n"
+        buf = buf + b"  profile:" + ev.render_profile.encode("ascii") + b"\n"
+        buf = buf + b"  submitter:" + ev.submitter.as_hex.encode("ascii") + b"\n"
+        buf = buf + b"  class:" + ev.evidence_class.encode("ascii") + b"\n"
+    return buf
+
+
+def _membership_fingerprint(case_id_int, evidence_id_list, evidence_lookup):
+    return _sha256(_canonicalize_membership(case_id_int, evidence_id_list, evidence_lookup))
+
+
+def _canonicalize_evidence_set(case_id_int, evidence_id_list, evidence_lookup):
+    # Same order as membership -- case.evidence_ids, submission order.
+    buf = b"gf-evidence-set/v1\n"
+    buf = buf + b"case_id=" + str(case_id_int).encode("ascii") + b"\n"
+    buf = buf + b"items=\n"
+    for eid in evidence_id_list:
+        ev = evidence_lookup(eid)
+        buf = buf + b"  id:" + str(int(eid)).encode("ascii") + b"\n"
+        buf = buf + b"  fp:" + _hex_of(ev.content_fingerprint).encode("ascii") + b"\n"
+        buf = buf + b"  status:" + ev.retrieval_status.encode("ascii") + b"\n"
+    return buf
+
+
+def _evidence_set_fingerprint(case_id_int, evidence_id_list, evidence_lookup):
+    return _sha256(_canonicalize_evidence_set(case_id_int, evidence_id_list, evidence_lookup))
+
+
+def _canonicalize_case_fork(
+    case_id_int, adjudication_dims_version_int, fork_id_int,
+    fork_body_fingerprint, root_id_int, root_import_fingerprint,
+    membership_fingerprint, evidence_set_fingerprint,
+):
+    buf = b"gf-case/v1\n"
+    buf = buf + b"case_type=FORK\n"
+    buf = buf + b"case_id=" + str(case_id_int).encode("ascii") + b"\n"
+    buf = buf + b"adjudication_dimensions_version=" + str(adjudication_dims_version_int).encode("ascii") + b"\n"
+    buf = buf + b"fork_id=" + str(fork_id_int).encode("ascii") + b"\n"
+    buf = buf + b"fork_body_fingerprint=" + _hex_of(fork_body_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"root_id=" + str(root_id_int).encode("ascii") + b"\n"
+    buf = buf + b"root_import_fingerprint=" + _hex_of(root_import_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"membership_fingerprint=" + _hex_of(membership_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"evidence_set_fingerprint=" + _hex_of(evidence_set_fingerprint).encode("ascii") + b"\n"
+    return buf
+
+
+def _canonicalize_case_root_envelope(
+    case_id_int, adjudication_dims_version_int, root_id_int,
+    root_import_fingerprint, envelope, membership_fingerprint,
+    evidence_set_fingerprint,
+):
+    # Binds the COMPLETE frozen envelope -- not just a subset -- since
+    # Stage 7 adjudicates against the full envelope, including its
+    # mutable/immutable dimension classification and essential
+    # constraints, not only objective/scope/beneficiary/resource_type.
+    buf = b"gf-case/v1\n"
+    buf = buf + b"case_type=ROOT_ENVELOPE\n"
+    buf = buf + b"case_id=" + str(case_id_int).encode("ascii") + b"\n"
+    buf = buf + b"adjudication_dimensions_version=" + str(adjudication_dims_version_int).encode("ascii") + b"\n"
+    buf = buf + b"root_id=" + str(root_id_int).encode("ascii") + b"\n"
+    buf = buf + b"root_import_fingerprint=" + _hex_of(root_import_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"objective=" + envelope.objective.encode("utf-8") + b"\n"
+    buf = buf + b"beneficiary_class=" + envelope.beneficiary_class.encode("utf-8") + b"\n"
+    buf = buf + b"resource_type=" + envelope.resource_type.encode("ascii") + b"\n"
+    buf = buf + b"scope=" + envelope.scope.encode("utf-8") + b"\n"
+    buf = buf + b"essential_constraints=\n"
+    for c in envelope.essential_constraints:
+        buf = buf + b"  " + c.encode("utf-8") + b"\n"
+    buf = buf + b"mutable_dimensions=\n"
+    for d in envelope.mutable_dimensions:
+        buf = buf + b"  " + d.encode("utf-8") + b"\n"
+    buf = buf + b"immutable_dimensions=\n"
+    for d in envelope.immutable_dimensions:
+        buf = buf + b"  " + d.encode("utf-8") + b"\n"
+    buf = buf + b"envelope_version=" + str(int(envelope.envelope_version)).encode("ascii") + b"\n"
+    buf = buf + b"membership_fingerprint=" + _hex_of(membership_fingerprint).encode("ascii") + b"\n"
+    buf = buf + b"evidence_set_fingerprint=" + _hex_of(evidence_set_fingerprint).encode("ascii") + b"\n"
+    return buf
+
+
+# =========================================================================
 # Data structures (bounded records)
 # =========================================================================
 
@@ -638,8 +804,23 @@ class Evidence:
     relevance_claim: str
     authority_claim: str
     temporal_marker: str
+    # Stage 6b: caller-selected at submission, immutable thereafter. One of
+    # RENDER_PROFILE_STANDARD / RENDER_PROFILE_DYNAMIC only.
+    render_profile: str
+    # Stage 6b: RETRIEVAL_NOT_FETCHED until fetch_evidence commits a
+    # terminal outcome (RETRIEVAL_FETCHED or RETRIEVAL_UNUSABLE_SHORT).
+    retrieval_status: str
+    # SHA-256 of frozen_content alone (pure content identity). Empty until
+    # a terminal retrieval_status is committed.
     content_fingerprint: bytes
+    # Exact bounded, consensus-approved rendered text used to compute
+    # content_fingerprint. Stage 7 reads THIS field -- it never refetches
+    # a (mutable) live webpage. Empty until fetched. Bounded to
+    # MAX_EVIDENCE_SLICE.
+    frozen_content: str
     submitted_at: u256
+    # True once retrieval_status has left RETRIEVAL_NOT_FETCHED (content is
+    # then immutable), regardless of whether the outcome was usable.
     frozen: bool
 
 
@@ -651,6 +832,10 @@ class Case:
     target_kind: str
     target_fingerprint: bytes
     evidence_ids: DynArray[u256]
+    # Stage 6b: binds WHICH evidence was closed into the case (id, url,
+    # profile, submitter, class), before any content exists. Set by
+    # close_evidence. Empty before close.
+    membership_fingerprint: bytes
     evidence_set_fingerprint: bytes
     adjudication_dimensions_version: u32
     case_fingerprint: bytes
@@ -956,6 +1141,7 @@ class Contract(gl.Contract):
         relevance_claims: DynArray[str],
         authority_claims: DynArray[str],
         temporal_markers: DynArray[str],
+        render_profiles: DynArray[str],
     ) -> u256:
         # Stage 3 does NOT read the incoming native-GEN value. Bond capture
         # is Stage 10. The payable signature is exposed for ABI stability.
@@ -1027,6 +1213,7 @@ class Contract(gl.Contract):
             or len(relevance_claims) != n_evi
             or len(authority_claims) != n_evi
             or len(temporal_markers) != n_evi
+            or len(render_profiles) != n_evi
         ):
             raise gl.vm.UserError("evidence arrays must have equal length")
         # Per-evidence validation + normalized-URL dedup within this case
@@ -1037,6 +1224,7 @@ class Contract(gl.Contract):
             rc = relevance_claims[i]
             ac = authority_claims[i]
             tm = temporal_markers[i]
+            rp = render_profiles[i]
             _check_len(url, 1, MAX_URL_LEN, "evidence.url")
             _reject_newline(url, "evidence.url")
             _check_len(rc, 0, MAX_RELEVANCE_CLAIM_LEN, "evidence.relevance_claim")
@@ -1051,6 +1239,12 @@ class Contract(gl.Contract):
                     ec_ok = True
             if not ec_ok:
                 raise gl.vm.UserError("evidence_class out of range")
+            rp_ok = False
+            for allowed in _ALLOWED_RENDER_PROFILES:
+                if rp == allowed:
+                    rp_ok = True
+            if not rp_ok:
+                raise gl.vm.UserError("render_profile out of range")
             norm = _normalize_url(url)
             if norm in seen_norm:
                 raise gl.vm.UserError("duplicate normalized evidence URL in case")
@@ -1086,7 +1280,10 @@ class Contract(gl.Contract):
                 relevance_claim=relevance_claims[i],
                 authority_claim=authority_claims[i],
                 temporal_marker=temporal_markers[i],
+                render_profile=render_profiles[i],
+                retrieval_status=RETRIEVAL_NOT_FETCHED,
                 content_fingerprint=b"",
+                frozen_content="",
                 submitted_at=u256(0),
                 frozen=False,
             )
@@ -1102,6 +1299,7 @@ class Contract(gl.Contract):
             target_kind=TARGET_KIND_ROOT_ENVELOPE,
             target_fingerprint=root.import_fingerprint,
             evidence_ids=evidence_ids,
+            membership_fingerprint=b"",
             evidence_set_fingerprint=b"",
             adjudication_dimensions_version=u32(ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE),
             case_fingerprint=b"",
@@ -1296,6 +1494,7 @@ class Contract(gl.Contract):
         relevance_claims: DynArray[str],
         authority_claims: DynArray[str],
         temporal_markers: DynArray[str],
+        render_profiles: DynArray[str],
     ) -> u256:
         if self.paused:
             raise gl.vm.UserError("paused")
@@ -1305,6 +1504,13 @@ class Contract(gl.Contract):
         # Only DRAFT (before any evidence) or EVIDENCE_OPEN accept new evidence.
         if fork.status != FORK_DRAFT and fork.status != FORK_EVIDENCE_OPEN:
             raise gl.vm.UserError("fork not accepting new evidence")
+        # Stage 6b: once the case's evidence membership has been closed
+        # (close_evidence), no further evidence may be added even if
+        # fork.status is still EVIDENCE_OPEN.
+        if fork.status == FORK_EVIDENCE_OPEN:
+            existing_case = self.cases[fork.evidence_case_id]
+            if existing_case.state != CASE_OPEN:
+                raise gl.vm.UserError("case not open for evidence")
         # Parallel arrays must have equal length; batch must be non-empty and
         # bounded so a single caller cannot bypass per-address caps by
         # inflating the batch.
@@ -1318,6 +1524,7 @@ class Contract(gl.Contract):
             or len(relevance_claims) != n
             or len(authority_claims) != n
             or len(temporal_markers) != n
+            or len(render_profiles) != n
         ):
             raise gl.vm.UserError("evidence arrays must have equal length")
         # Sender classification (creator vs community). Never accept a
@@ -1374,6 +1581,7 @@ class Contract(gl.Contract):
             rc = relevance_claims[i]
             ac = authority_claims[i]
             tm = temporal_markers[i]
+            rp = render_profiles[i]
             _check_len(url, 1, MAX_URL_LEN, "evidence.url")
             _reject_newline(url, "evidence.url")
             _check_len(rc, 0, MAX_RELEVANCE_CLAIM_LEN, "evidence.relevance_claim")
@@ -1388,6 +1596,12 @@ class Contract(gl.Contract):
                     ec_ok = True
             if not ec_ok:
                 raise gl.vm.UserError("evidence_class out of range")
+            rp_ok = False
+            for allowed in _ALLOWED_RENDER_PROFILES:
+                if rp == allowed:
+                    rp_ok = True
+            if not rp_ok:
+                raise gl.vm.UserError("render_profile out of range")
             norm = _normalize_url(url)
             if norm in seen_norm_in_batch:
                 raise gl.vm.UserError("duplicate normalized URL in batch")
@@ -1404,6 +1618,7 @@ class Contract(gl.Contract):
                 target_kind=TARGET_KIND_FORK,
                 target_fingerprint=fork.body_fingerprint,
                 evidence_ids=DynArray[u256](),
+                membership_fingerprint=b"",
                 evidence_set_fingerprint=b"",
                 adjudication_dimensions_version=u32(ADJUDICATION_DIMENSIONS_VERSION_FORK),
                 case_fingerprint=b"",
@@ -1430,14 +1645,20 @@ class Contract(gl.Contract):
                 relevance_claim=relevance_claims[i],
                 authority_claim=authority_claims[i],
                 temporal_marker=temporal_markers[i],
+                render_profile=render_profiles[i],
+                retrieval_status=RETRIEVAL_NOT_FETCHED,
                 content_fingerprint=b"",
+                frozen_content="",
                 submitted_at=u256(0),
                 frozen=False,
             )
             new_ids.append(evidence_id)
-        # Append in submission order to the case's evidence index.
+        # Append in submission order to the case's evidence index AND to
+        # the Case record's own evidence_ids (kept in lockstep; Stage 6b's
+        # close_evidence/seal_evidence read case.evidence_ids directly).
         for eid in new_ids:
             self.evidence_by_case[case_id].append(eid)
+            self.cases[case_id].evidence_ids.append(eid)
         # Update contributor counters.
         old_counters = self.fork_case_counters[case_id]
         if is_creator:
@@ -1476,13 +1697,258 @@ class Contract(gl.Contract):
             )
         return case_id
 
-    @gl.public.write
-    def freeze_evidence(self, evidence_id: u256) -> None:
-        raise gl.vm.UserError("stage-2: not implemented")
+    def _case_owner(self, case) -> Address:
+        # Resolves the authorization owner for a case, branching on
+        # case_type. FORK cases: the fork's creator. ROOT_ENVELOPE cases:
+        # the root's original importer/proposer. Used by close_evidence
+        # and abort_case only -- fetch_evidence and seal_evidence remain
+        # permissionless per Stage 6b's liveness requirement.
+        if case.case_type == CASE_TYPE_FORK:
+            return self.forks[case.target_id].creator
+        if case.case_type == CASE_TYPE_ROOT_ENVELOPE:
+            return self.roots[case.target_id].proposer
+        raise gl.vm.UserError("unsupported case_type for ownership")
 
     @gl.public.write
-    def freeze_case(self, case_id: u256) -> None:
-        raise gl.vm.UserError("stage-2: not implemented")
+    def close_evidence(self, case_id: u256) -> None:
+        # Step 1 of Close -> Fetch -> Seal. Deterministic. Locks evidence
+        # membership so individual fetch_evidence calls may begin.
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if case_id not in self.cases:
+            raise gl.vm.UserError("case not found")
+        case = self.cases[case_id]
+        if case.state != CASE_OPEN:
+            raise gl.vm.UserError("case not open")
+        if len(case.evidence_ids) < 1:
+            raise gl.vm.UserError("case has no evidence")
+        owner = self._case_owner(case)
+        if gl.message.sender_address != owner:
+            raise gl.vm.UserError("only case owner may close evidence")
+
+        def _lookup(eid):
+            return self.evidence[eid]
+
+        membership_fp = _membership_fingerprint(int(case_id), case.evidence_ids, _lookup)
+        self.cases[case_id] = Case(
+            case_type=case.case_type,
+            target_id=case.target_id,
+            target_kind=case.target_kind,
+            target_fingerprint=case.target_fingerprint,
+            evidence_ids=case.evidence_ids,
+            membership_fingerprint=membership_fp,
+            evidence_set_fingerprint=case.evidence_set_fingerprint,
+            adjudication_dimensions_version=case.adjudication_dimensions_version,
+            case_fingerprint=case.case_fingerprint,
+            state=CASE_EVIDENCE_CLOSED,
+            retry_count=case.retry_count,
+            last_attempt_at=case.last_attempt_at,
+        )
+
+    @gl.public.write
+    def fetch_evidence(self, evidence_id: u256) -> None:
+        # Step 2 of Close -> Fetch -> Seal. Nondeterministic. One evidence
+        # item per transaction -- deliberately NOT batched across up to 16
+        # items in a single call (see docs/STAGE_6B_PRODUCTION_EVIDENCE
+        # _FREEZE.md sec 3 for the explicit Option A vs Option B comparison
+        # that drove this choice). Permissionless: any caller may advance a
+        # closed case. NOT gated on self.paused -- this is a progress/exit
+        # operation on already-committed membership, not new exposure.
+        if evidence_id not in self.evidence:
+            raise gl.vm.UserError("evidence not found")
+        ev = self.evidence[evidence_id]
+        if ev.case_id not in self.cases:
+            raise gl.vm.UserError("case not found")
+        case = self.cases[ev.case_id]
+        if case.state != CASE_EVIDENCE_CLOSED:
+            raise gl.vm.UserError("case not evidence-closed")
+        if ev.retrieval_status != RETRIEVAL_NOT_FETCHED:
+            raise gl.vm.UserError("evidence already fetched")
+
+        url = ev.url
+        profile = ev.render_profile
+
+        # Two minimal leader functions, chosen deterministically BEFORE
+        # entering the nondet block -- same discipline as the Stage 6a
+        # probe. mode is always "text"; wait is a fixed contract constant,
+        # never caller-supplied. No try/except around the nondet call: per
+        # Stage 6a's own design and this stage's explicit instruction not
+        # to introduce speculative exception-catching, a render() failure
+        # (WEBPAGE_LOAD_FAILED, Undetermined, or any other cause) simply
+        # fails this transaction. No state commits; evidence remains
+        # RETRIEVAL_NOT_FETCHED and may be retried later.
+        def _fetch_standard() -> str:
+            return gl.nondet.web.render(url, mode="text")
+
+        def _fetch_dynamic() -> str:
+            return gl.nondet.web.render(url, mode="text", wait_after_loaded=DYNAMIC_WAIT_SECONDS)
+
+        if profile == RENDER_PROFILE_DYNAMIC:
+            content = gl.eq_principle.strict_eq(_fetch_dynamic)
+        else:
+            content = gl.eq_principle.strict_eq(_fetch_standard)
+
+        # Everything below is deterministic post-processing of an already
+        # consensus-agreed string. No further nondet calls.
+        bounded = content[:MAX_EVIDENCE_SLICE]
+        fp = _content_fingerprint(bounded)
+        if len(bounded) >= MIN_USEFUL_CONTENT_LEN:
+            status = RETRIEVAL_FETCHED
+        else:
+            status = RETRIEVAL_UNUSABLE_SHORT
+
+        self.evidence[evidence_id] = Evidence(
+            case_id=ev.case_id,
+            submitter=ev.submitter,
+            url=ev.url,
+            normalized_source=ev.normalized_source,
+            evidence_class=ev.evidence_class,
+            relevance_claim=ev.relevance_claim,
+            authority_claim=ev.authority_claim,
+            temporal_marker=ev.temporal_marker,
+            render_profile=ev.render_profile,
+            retrieval_status=status,
+            content_fingerprint=fp,
+            frozen_content=bounded,
+            submitted_at=ev.submitted_at,
+            frozen=True,
+        )
+
+    @gl.public.write
+    def seal_evidence(self, case_id: u256) -> None:
+        # Step 3 of Close -> Fetch -> Seal. Deterministic. Requires every
+        # member evidence item to have resolved to a terminal retrieval
+        # status (RETRIEVAL_FETCHED or RETRIEVAL_UNUSABLE_SHORT -- both
+        # count; "unusable" is a resolved, honest outcome, not a blocker).
+        # Permissionless. NOT gated on self.paused (progress/exit
+        # operation).
+        if case_id not in self.cases:
+            raise gl.vm.UserError("case not found")
+        case = self.cases[case_id]
+        if case.state != CASE_EVIDENCE_CLOSED:
+            raise gl.vm.UserError("case not evidence-closed")
+
+        def _lookup(eid):
+            return self.evidence[eid]
+
+        total_len = 0
+        for eid in case.evidence_ids:
+            ev = self.evidence[eid]
+            if not ev.frozen:
+                raise gl.vm.UserError("not all evidence fetched")
+            total_len = total_len + len(ev.frozen_content)
+        if total_len > MAX_FROZEN_CONTENT_PER_CASE:
+            raise gl.vm.UserError("MAX_FROZEN_CONTENT_PER_CASE exceeded")
+
+        evidence_set_fp = _evidence_set_fingerprint(int(case_id), case.evidence_ids, _lookup)
+
+        if case.case_type == CASE_TYPE_FORK:
+            fork = self.forks[case.target_id]
+            root = self.roots[fork.root_id]
+            case_fp = _sha256(
+                _canonicalize_case_fork(
+                    int(case_id),
+                    int(case.adjudication_dimensions_version),
+                    int(case.target_id),
+                    fork.body_fingerprint,
+                    int(fork.root_id),
+                    root.import_fingerprint,
+                    case.membership_fingerprint,
+                    evidence_set_fp,
+                )
+            )
+        elif case.case_type == CASE_TYPE_ROOT_ENVELOPE:
+            root = self.roots[case.target_id]
+            case_fp = _sha256(
+                _canonicalize_case_root_envelope(
+                    int(case_id),
+                    int(case.adjudication_dimensions_version),
+                    int(case.target_id),
+                    root.import_fingerprint,
+                    root.envelope,
+                    case.membership_fingerprint,
+                    evidence_set_fp,
+                )
+            )
+            # Derive RootProposal.web_content_fingerprint from the frozen
+            # Evidence record whose URL matches the root's own canonical
+            # proposal_url, if the submitter included it as evidence and it
+            # was successfully (usefully) fetched. Never a duplicate fetch.
+            if root.web_content_fingerprint == b"":
+                root_norm = _normalize_url(root.proposal_url)
+                for eid in case.evidence_ids:
+                    ev = self.evidence[eid]
+                    if (
+                        ev.retrieval_status == RETRIEVAL_FETCHED
+                        and _normalize_url(ev.url) == root_norm
+                    ):
+                        self.roots[case.target_id] = RootProposal(
+                            dao_id=root.dao_id,
+                            external_proposal_id=root.external_proposal_id,
+                            title=root.title,
+                            proposal_url=root.proposal_url,
+                            proposer=root.proposer,
+                            import_fingerprint=root.import_fingerprint,
+                            web_content_fingerprint=ev.content_fingerprint,
+                            structured_parameters=root.structured_parameters,
+                            envelope=root.envelope,
+                            envelope_status=root.envelope_status,
+                            envelope_case_id=root.envelope_case_id,
+                            identity_status=root.identity_status,
+                            imported_at=root.imported_at,
+                        )
+                        break
+        else:
+            raise gl.vm.UserError("unsupported case_type for seal")
+
+        self.cases[case_id] = Case(
+            case_type=case.case_type,
+            target_id=case.target_id,
+            target_kind=case.target_kind,
+            target_fingerprint=case.target_fingerprint,
+            evidence_ids=case.evidence_ids,
+            membership_fingerprint=case.membership_fingerprint,
+            evidence_set_fingerprint=evidence_set_fp,
+            adjudication_dimensions_version=case.adjudication_dimensions_version,
+            case_fingerprint=case_fp,
+            state=CASE_CASE_FROZEN,
+            retry_count=case.retry_count,
+            last_attempt_at=case.last_attempt_at,
+        )
+
+    @gl.public.write
+    def abort_case(self, case_id: u256) -> None:
+        # Explicit, auditable escape valve (docs sec 8/9): a closed case
+        # whose evidence membership can never fully resolve (a permanently
+        # unavailable URL, or a total-content-cap breach at seal time)
+        # would otherwise be stuck forever. Owner-gated. Only a CLOSED
+        # (not yet sealed) case may be aborted -- an OPEN case doesn't need
+        # aborting (evidence submission can simply stop), and a
+        # CASE_FROZEN case is immutable by design.
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if case_id not in self.cases:
+            raise gl.vm.UserError("case not found")
+        case = self.cases[case_id]
+        if case.state != CASE_EVIDENCE_CLOSED:
+            raise gl.vm.UserError("only an evidence-closed case may be aborted")
+        owner = self._case_owner(case)
+        if gl.message.sender_address != owner:
+            raise gl.vm.UserError("only case owner may abort")
+        self.cases[case_id] = Case(
+            case_type=case.case_type,
+            target_id=case.target_id,
+            target_kind=case.target_kind,
+            target_fingerprint=case.target_fingerprint,
+            evidence_ids=case.evidence_ids,
+            membership_fingerprint=case.membership_fingerprint,
+            evidence_set_fingerprint=case.evidence_set_fingerprint,
+            adjudication_dimensions_version=case.adjudication_dimensions_version,
+            case_fingerprint=case.case_fingerprint,
+            state=CASE_ABORTED,
+            retry_count=case.retry_count,
+            last_attempt_at=case.last_attempt_at,
+        )
 
     @gl.public.write
     def adjudicate(self, case_id: u256) -> None:

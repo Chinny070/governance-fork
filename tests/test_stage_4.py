@@ -81,7 +81,8 @@ def _evidence_bundle_stage3():
     rel = shim.DynArray(["original proposal"])
     auth = shim.DynArray(["official DAO source"])
     tm = shim.DynArray(["2026-01-01"])
-    return urls, cls, rel, auth, tm
+    rp = shim.DynArray([gf.RENDER_PROFILE_STANDARD])
+    return urls, cls, rel, auth, tm, rp
 
 
 def _fresh_with_faithful_root(mutable=("allocation", "duration"),
@@ -99,11 +100,11 @@ def _fresh_with_faithful_root(mutable=("allocation", "duration"),
     rid = c.import_root_proposal(
         did, "EP", "T", "https://x/1", _params(parent_params)
     )
-    urls, cls, rel, auth, tm = _evidence_bundle_stage3()
+    urls, cls, rel, auth, tm, rp = _evidence_bundle_stage3()
     c.submit_root_envelope(
         rid,
         _envelope(mutable=mutable, immutable=immutable),
-        urls, cls, rel, auth, tm,
+        urls, cls, rel, auth, tm, rp,
     )
     # ---- test-harness flip only ---- (no contract path enables this)
     r = c.get_root_proposal(rid)
@@ -684,11 +685,14 @@ class PublicSafetyTests(unittest.TestCase):
 
 
 class ProhibitedBehaviorTests(unittest.TestCase):
-    def test_no_nondet(self):
+    def test_no_disallowed_nondet_or_gen_calls(self):
+        # Stage 6b baseline: gl.nondet.web.render + gl.eq_principle.strict_eq
+        # are now legitimate (fetch_evidence only).
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("gl.nondet.", "web.render(", "web.get(",
-                       "gl.eq_principle.", "gl.nondet.exec_prompt", "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
+                       "gl.eq_principle.prompt_non_comparative",
+                       "gl.nondet.exec_prompt", "transfer("):
             self.assertNotIn(banned, src)
 
     def test_no_gl_message_value(self):

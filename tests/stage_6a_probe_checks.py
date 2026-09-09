@@ -125,14 +125,21 @@ def check_no_try_except_around_nondet(source):
 
 
 def check_production_contract_unchanged_by_probe(_source):
-    # The probe file must not be the reason governance_fork.py changed.
-    # This check just confirms governance_fork.py has no probe-specific
-    # additions (best-effort signal, not a hash comparison across commits).
+    # The probe file must never be the SOURCE of governance_fork.py's own
+    # web-retrieval capability -- i.e. production never imports/references
+    # this isolated probe file, and never falls back to web.get(). This
+    # check does NOT assert zero gl.nondet.*/gl.eq_principle.* usage in
+    # production: as of Stage 6b, governance_fork.py legitimately uses
+    # gl.nondet.web.render(...) + gl.eq_principle.strict_eq(...) in its
+    # own fetch_evidence, following the exact pattern this Stage 6a probe
+    # validated live. That is the intended, approved outcome of Stage 6a
+    # -- not something this check should keep failing on.
     prod_source = PROD_PATH.read_text()
-    for banned in ("gl.nondet.", "gl.eq_principle.", "web_render_probe"):
-        if banned in prod_source:
-            return False, f"production contract references {banned}"
-    return True, "production contract has zero probe-related additions"
+    if "web_render_probe" in prod_source:
+        return False, "production contract references the isolated probe file"
+    if "web.get(" in prod_source:
+        return False, "production contract references web.get( (never the fallback)"
+    return True, "production contract does not reference the probe file or web.get("
 
 
 def extract_abi(source):

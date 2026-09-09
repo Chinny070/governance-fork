@@ -53,11 +53,16 @@ def check_lf_line_endings(raw: bytes) -> tuple[bool, str]:
 
 
 def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
+    # Baseline shifted at Stage 6b: gl.nondet.web.render(...) wrapped in
+    # gl.eq_principle.strict_eq(...) is now the sanctioned production
+    # evidence-retrieval pathway (fetch_evidence only). Everything else
+    # remains banned: web.get (never the fallback), prompt_comparative /
+    # prompt_non_comparative / exec_prompt (no semantic adjudication in
+    # Stage 6b), gl.message.value / transfer( (no native GEN logic yet).
     banned = [
-        r"gl\.nondet\.",
-        r"web\.render\(",
         r"web\.get\(",
-        r"gl\.eq_principle\.",
+        r"gl\.eq_principle\.prompt_comparative",
+        r"gl\.eq_principle\.prompt_non_comparative",
         r"gl\.nondet\.exec_prompt",
         r"transfer\(",
     ]
@@ -68,7 +73,13 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
             hits.append(f"{pat} at line {line}")
     if hits:
         return False, "; ".join(hits)
-    return True, "no prohibited substrings"
+    # Positive check: fetch_evidence must actually use the sanctioned
+    # render + strict_eq pathway (else the whole Stage 6b claim is empty).
+    if "gl.nondet.web.render(" not in source:
+        return False, "gl.nondet.web.render( expected but not found"
+    if "gl.eq_principle.strict_eq(" not in source:
+        return False, "gl.eq_principle.strict_eq( expected but not found"
+    return True, "web.render/strict_eq present; all other nondet/GEN/semantic calls absent"
 
 
 def check_no_message_value_read(source: str) -> tuple[bool, str]:
@@ -134,7 +145,9 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 11
+    expected_write = 13  # Stage 6b: +close_evidence, +fetch_evidence,
+                         # +seal_evidence, +abort_case, -freeze_evidence,
+                         # -freeze_case (11 - 2 + 4 = 13)
     expected_view = 16
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin

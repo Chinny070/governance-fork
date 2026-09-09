@@ -143,12 +143,86 @@ class _PublicNamespace:
     write = _WriteDecorator()
 
 
+class RenderFailure(Exception):
+    """Local stand-in for a gl.nondet.web.render failure (e.g. what a live
+    WEBPAGE_LOAD_FAILED / Undetermined would look like from the caller's
+    side: the leader function never returns, the whole transaction fails).
+    LOCAL LOGIC TEST substitute only -- not live capability evidence.
+    Stage 6a already supplies the live evidence for this failure mode.
+    """
+    pass
+
+
+class _MockWebRegistry:
+    """Deterministic, test-configured stand-in for gl.nondet.web.render.
+
+    LOCAL LOGIC TEST infrastructure only. Exercises the contract's
+    deterministic storage/fingerprint/lifecycle logic around a render
+    call. Does NOT exercise, simulate, or prove anything about live
+    render() behavior, consensus, or Undetermined handling -- that is
+    Stage 6a's exclusive domain (see
+    docs/STAGE_6A_WEB_RENDER_PROBE_REPORT.md).
+    """
+
+    def __init__(self):
+        self._responses = {}  # url -> str content
+        self._failures = set()  # urls that raise RenderFailure
+
+    def set_response(self, url, content):
+        self._responses[url] = content
+        self._failures.discard(url)
+
+    def set_failure(self, url):
+        self._failures.add(url)
+        self._responses.pop(url, None)
+
+    def reset(self):
+        self._responses.clear()
+        self._failures.clear()
+
+    def render(self, url, mode="text", wait_after_loaded=None):
+        if url in self._failures:
+            raise RenderFailure(f"mock render failure for {url}")
+        if url not in self._responses:
+            raise RenderFailure(f"no mock response configured for {url}")
+        return self._responses[url]
+
+
+class _WebNamespace:
+    def __init__(self, registry):
+        self._registry = registry
+
+    def render(self, url, mode="text", wait_after_loaded=None):
+        return self._registry.render(url, mode=mode, wait_after_loaded=wait_after_loaded)
+
+
+class _NondetNamespace:
+    def __init__(self, registry):
+        self.web = _WebNamespace(registry)
+
+
+class _EqPrincipleNamespace:
+    """LOCAL LOGIC TEST stand-in. strict_eq here just calls the leader
+    function directly -- there is no validator set, no rotation, no
+    Undetermined outcome in this shim. It exists only to exercise the
+    contract's deterministic post-processing of whatever the leader
+    function returns (or the failure path if it raises).
+    """
+
+    @staticmethod
+    def strict_eq(leader_fn):
+        return leader_fn()
+
+
 class _GLNamespace:
     def __init__(self):
         self.vm = _VMNamespace
         self.public = _PublicNamespace
         self.message = _MessageContext()
         self.Contract = _Contract
+        self.mock_web = _MockWebRegistry()
+        self.nondet = _NondetNamespace(self.mock_web)
+        self.eq_principle = _EqPrincipleNamespace()
 
 
 class _Contract:
@@ -224,6 +298,21 @@ def reset_message_context():
 def set_sender(addr: str):
     gl = sys.modules["genlayer"].gl
     gl.message.sender_address = Address(addr)
+
+
+def get_render_failure():
+    """RenderFailure exception class -- raised by the mock web registry.
+    LOCAL LOGIC TEST infrastructure only; see _MockWebRegistry docstring.
+    """
+    return RenderFailure
+
+
+def get_mock_web():
+    """The active gl.nondet.web mock registry for the installed genlayer
+    module. Use set_response(url, content) / set_failure(url) / reset()
+    to control fetch_evidence's behavior in local tests.
+    """
+    return sys.modules["genlayer"].gl.mock_web
 
 
 def get_gl():
