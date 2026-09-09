@@ -89,7 +89,7 @@ def _evidence_arrays(urls, classes=None, rel=None, auth=None, tm=None, profiles=
 def _fresh():
     shim.reset_message_context()
     shim.get_mock_web().reset()
-    return gf.Contract(shim.Address("0x" + "aa" * 20))
+    return gf.Contract()
 
 
 def _fresh_root_case(urls=("https://x/1",), profiles=None, mutable=("allocation",),

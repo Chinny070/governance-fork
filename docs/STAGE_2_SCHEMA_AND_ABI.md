@@ -12,7 +12,7 @@ Verified against current official GenLayer documentation and one known-good loca
 | Import | `from genlayer import *` (documented; primary pattern). Exposes `gl.Contract`, `gl.public.*`, `gl.vm.UserError`, `gl.message.sender_address`, `TreeMap`, `DynArray`, `Address`, `u256`, `u32`, `bytes`, `bool`, `str`, `@allow_storage`, `@dataclass`. |
 | Base class | `class Contract(gl.Contract):`. |
 | Decorators | `@gl.public.view` (read-only), `@gl.public.write` (state-changing), `@gl.public.write.payable` (state-changing + `value`). |
-| Constructor | `def __init__(self, treasury_addr: Address):` — **no `-> None` return annotation** (Studio schema-load gotcha; documented in prior work). |
+| Constructor | `def __init__(self):` — **no `-> None` return annotation** (Studio schema-load gotcha; documented in prior work). **Updated post-Stage-6b:** originally `def __init__(self, treasury_addr: Address):`; changed to parameterless after a live Studio deploy failure (`AttributeError: 'int' object has no attribute 'as_bytes'` in the storage setter) traced to the deploy-calldata decoder not reconstructing an `Address` from constructor arguments — it delivers a raw `int` instead. `treasury_addr` is now sourced from `gl.message.sender_address` (the deploying account) inside `__init__`, avoiding constructor calldata for `Address` entirely. Treasury/admin is therefore always the account that deploys the contract. See the "fix: initialize treasury from deployer" commit. |
 | Storage primitives used | `u32`, `u256`, `bool`, `str`, `bytes`, `Address`, `TreeMap[K, V]`, `DynArray[T]`. All in the current confirmed primitive list. |
 | Custom storage classes | `@allow_storage @dataclass` on every dataclass. Applied uniformly to keep the same shape whether used as stored value or as view return. |
 | Enums | Represented as **module-level `str` constants** with fields typed `str`. Deliberately not using Python `Enum` / `IntEnum` — string constants have historically loaded cleanly through the Studio schema extractor, and every enum is bounded semantically by validation on the write path (Stage 3+). |
@@ -373,7 +373,7 @@ Stage 2B leaves this as a **manual step for the user** because the automated env
 | Line count | *(see final report)* |
 | ABI method count | 29 (11 write + 2 admin + 16 view) |
 | Depends header | `# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }` |
-| Constructor signature | `__init__(self, treasury_addr: Address)` — no `-> None` |
+| Constructor signature | `__init__(self)` — no `-> None`. **Updated post-Stage-6b**: parameterless; `treasury_addr` is set from `gl.message.sender_address` inside `__init__` (see §1 above). |
 
 ### 18.2 Exact steps
 
@@ -386,7 +386,7 @@ Stage 2B leaves this as a **manual step for the user** because the automated env
 ### 18.3 Successful schema extraction should show
 
 - No red error toast or console banner.
-- Constructor line: `__init__(treasury_addr: Address)`.
+- Constructor line: `__init__(self)` (parameterless as of the post-Stage-6b deploy-compatibility correction; treasury/admin resolves to the deployer's own address).
 - 29 methods in the method list, with these names (order may vary):
 
   Writes (11): `register_dao`, `import_root_proposal`, `submit_root_envelope`, `create_fork`, `submit_fork_evidence`, `freeze_evidence`, `freeze_case`, `adjudicate`, `challenge_verdict`, `finalize`, `settle_bond`.

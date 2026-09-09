@@ -83,7 +83,7 @@ def _fresh_with_fork():
     envelope FAITHFUL.
     """
     shim.reset_message_context()
-    c = gf.Contract(shim.Address("0x" + "aa" * 20))
+    c = gf.Contract()
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
         did, "EP", "T", "https://x/1",
@@ -598,7 +598,7 @@ class ForkStatusTests(unittest.TestCase):
 class RootEnvelopeStillWorksTests(unittest.TestCase):
     def test_stage_3_envelope_flow_unchanged(self):
         shim.reset_message_context()
-        c = gf.Contract(shim.Address("0x" + "aa" * 20))
+        c = gf.Contract()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
         urls, ec, rel, auth, tm, rp = _root_evidence_bundle()
@@ -616,7 +616,7 @@ class RootEnvelopeStillWorksTests(unittest.TestCase):
 class FaithfulGateUnchangedTests(unittest.TestCase):
     def test_create_fork_still_gated_on_faithful(self):
         shim.reset_message_context()
-        c = gf.Contract(shim.Address("0x" + "aa" * 20))
+        c = gf.Contract()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1",
                                      _params([("allocation", "100000")]))
@@ -653,7 +653,7 @@ class ProhibitedBehaviorTests(unittest.TestCase):
 
     def test_no_adjudicate_implementation(self):
         shim.reset_message_context()
-        c = gf.Contract(shim.Address("0x" + "aa" * 20))
+        c = gf.Contract()
         with self.assertRaises(UserError):
             c.adjudicate(shim.u256(1))
 

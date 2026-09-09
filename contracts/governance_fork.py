@@ -1025,8 +1025,29 @@ class Contract(gl.Contract):
     next_challenge_id: u256
     next_bond_id: u256
 
-    def __init__(self, treasury_addr: Address):
-        self.treasury_addr = treasury_addr
+    def __init__(self):
+        # Stage 6b deploy-compatibility correction: treasury/admin is bound
+        # to the deploying sender, not a caller-supplied constructor
+        # argument. This is not a wrapping/conversion of the value -- every
+        # other Address-typed field in this contract (Dao.importer,
+        # RootProposal.proposer, Fork.creator, Evidence.submitter) is
+        # already assigned directly from gl.message.sender_address with no
+        # intermediate conversion, and pause()/unpause() already compare
+        # gl.message.sender_address directly against self.treasury_addr
+        # (Address-typed) with `!=`. Both facts establish that
+        # gl.message.sender_address already returns the same Address type
+        # this field expects; assigning it here is consistent with every
+        # existing usage in this file, not a new pattern.
+        #
+        # The prior signature -- __init__(self, treasury_addr: Address) --
+        # deployed to a Studio instance whose deploy-calldata decoder does
+        # not correctly reconstruct an Address from constructor arguments
+        # (it delivers a raw int instead, and the storage setter's
+        # val.as_bytes access then fails). Sourcing treasury_addr from the
+        # deployment sender instead of constructor calldata avoids that
+        # decode path entirely: whoever deploys this contract becomes its
+        # treasury/admin, exactly as intended for this deployment.
+        self.treasury_addr = gl.message.sender_address
         self.paused = False
         self.next_dao_id = u256(1)
         self.next_root_id = u256(1)

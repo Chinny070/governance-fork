@@ -80,7 +80,7 @@ def _params(pairs):
 
 def _fresh():
     shim.reset_message_context()
-    return gf.Contract(shim.Address("0x" + "aa" * 20))
+    return gf.Contract()
 
 
 UserError = shim.get_user_error()

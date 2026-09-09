@@ -95,7 +95,7 @@ def _fresh_with_faithful_root(mutable=("allocation", "duration"),
     such transition path in Stage 4.
     """
     shim.reset_message_context()
-    c = gf.Contract(shim.Address("0x" + "aa" * 20))
+    c = gf.Contract()
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
         did, "EP", "T", "https://x/1", _params(parent_params)
@@ -125,7 +125,7 @@ class CreateForkGateTests(unittest.TestCase):
 
     def _prep(self, envelope_status):
         shim.reset_message_context()
-        c = gf.Contract(shim.Address("0x" + "aa" * 20))
+        c = gf.Contract()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
         r = c.get_root_proposal(rid)
