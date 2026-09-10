@@ -34,6 +34,8 @@ shim.install()
 
 import governance_fork as gf  # noqa: E402
 
+shim.autopay_bonds(gf)  # Stage 9: existing payable call sites pass no value
+
 
 UserError = shim.get_user_error()
 

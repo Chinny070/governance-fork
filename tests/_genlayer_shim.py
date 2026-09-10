@@ -152,6 +152,83 @@ class _MessageContext:
         self.value = u256(0)
 
 
+# Stage 9: native-GEN ledger for LOCAL LOGIC TESTS. Models what
+# contracts/probe/value_transfer_probe.py proved on the pinned runtime:
+# a payable method credits self.balance by gl.message.value, and
+# gl.get_contract_at(addr).emit_transfer(value=v) moves v out of the
+# executing contract's balance. It does NOT model consensus, message
+# finalization timing, or the Studio IC->EOA credit gap.
+_CONTRACT_ADDR = Address("0x" + "c0" * 20)
+
+
+class _MockChain:
+    def __init__(self):
+        self._bal = {}
+        self.current_contract = str(_CONTRACT_ADDR)
+
+    def reset(self):
+        self._bal = {}
+        self.current_contract = str(_CONTRACT_ADDR)
+
+    def fund(self, addr, amount):
+        a = str(addr)
+        self._bal[a] = self._bal.get(a, 0) + int(amount)
+
+    def balance_of(self, addr):
+        return self._bal.get(str(addr), 0)
+
+    def credit(self, addr, amount):
+        if int(amount) == 0:
+            return
+        self.fund(addr, amount)
+
+    def deposit_from(self, sender, contract, amount):
+        # A payable call: credit the contract. Debit the sender too when
+        # the sender has been funded in the ledger (so accounting-invariant
+        # tests get true double-entry); an unfunded sender is treated as an
+        # external faucet (keeps pre-Stage-9 tests, which never fund a
+        # sender, working unchanged).
+        amt = int(amount)
+        if amt == 0:
+            return
+        s = str(sender)
+        if self._bal.get(s, 0) >= amt:
+            self._bal[s] = self._bal.get(s, 0) - amt
+        self._bal[str(contract)] = self._bal.get(str(contract), 0) + amt
+
+    def transfer(self, frm, to, amount):
+        amt = int(amount)
+        f = str(frm)
+        if self._bal.get(f, 0) < amt:
+            raise _UserError(
+                f"insufficient balance for transfer: have {self._bal.get(f, 0)}, need {amt}"
+            )
+        self._bal[f] = self._bal.get(f, 0) - amt
+        self._bal[str(to)] = self._bal.get(str(to), 0) + amt
+
+
+_CHAIN = _MockChain()
+
+# method name -> native value auto-attached to a payable call when the test
+# has not explicitly set gl.message.value. Populated by autopay_bonds().
+_AUTOPAY = {}
+_MSG_STATE = {"explicit": False}
+
+
+class _AccountHandle:
+    """Return of gl.get_contract_at(addr) -- balance + emit_transfer only."""
+
+    def __init__(self, addr):
+        self._addr = str(addr)
+
+    @property
+    def balance(self):
+        return u256(_CHAIN.balance_of(self._addr))
+
+    def emit_transfer(self, value, on="finalized"):
+        _CHAIN.transfer(_CHAIN.current_contract, self._addr, int(value))
+
+
 class _VMNamespace:
     UserError = _UserError
 
@@ -167,7 +244,24 @@ class _PublicNamespace:
 
         @staticmethod
         def payable(fn):
-            return fn
+            def _wrapped(self, *a, **kw):
+                gl = sys.modules["genlayer"].gl
+                prev_value = gl.message.value
+                auto = _AUTOPAY.get(fn.__name__)
+                if auto is not None and not _MSG_STATE["explicit"]:
+                    gl.message.value = u256(int(auto))
+                # A payable call moves value from the sender to the contract.
+                _CHAIN.deposit_from(
+                    gl.message.sender_address, _CHAIN.current_contract,
+                    int(gl.message.value),
+                )
+                try:
+                    return fn(self, *a, **kw)
+                finally:
+                    gl.message.value = prev_value
+
+            _wrapped.__name__ = getattr(fn, "__name__", "payable_method")
+            return _wrapped
 
     write = _WriteDecorator()
 
@@ -330,6 +424,10 @@ class _GLNamespace:
         self.storage = _StorageNamespace
         self.eq_principle = _EqPrincipleNamespace()
 
+    @staticmethod
+    def get_contract_at(addr):
+        return _AccountHandle(addr)
+
 
 class _Contract:
     """Base class for storage-annotated contracts.
@@ -356,7 +454,13 @@ class _Contract:
                 setattr(instance, name, TreeMap())
             elif ann is DynArray:
                 setattr(instance, name, DynArray())
+        # Stage 9: fresh native-GEN ledger per contract instantiation.
+        _CHAIN.reset()
         return instance
+
+    @property
+    def balance(self):
+        return u256(_CHAIN.balance_of(_CHAIN.current_contract))
 
 
 # ---------------------------------------------------------------------------
@@ -395,15 +499,60 @@ def install():
 
 
 def reset_message_context():
-    """Restore the message context to the default sender + zero value."""
+    """Restore the message context to the default sender + zero value, and
+    clear the explicit-value flag so payable-method autopay applies again."""
     gl = sys.modules["genlayer"].gl
     gl.message.sender_address = Address("0x" + "aa" * 20)
     gl.message.value = u256(0)
+    _MSG_STATE["explicit"] = False
 
 
 def set_sender(addr: str):
     gl = sys.modules["genlayer"].gl
     gl.message.sender_address = Address(addr)
+
+
+# --- Stage 9: native-GEN test helpers (LOCAL LOGIC TESTS only) -----------
+
+def set_value(v):
+    """Explicitly set gl.message.value for the next payable call(s). Setting
+    it (even to 0) disables autopay until reset_message_context()."""
+    gl = sys.modules["genlayer"].gl
+    gl.message.value = u256(int(v))
+    _MSG_STATE["explicit"] = True
+
+
+def autopay_bonds(gf_module):
+    """Register the exact bond each payable method expects so existing test
+    call sites (which pass no value) keep working. Wrong-bond / zero-bond
+    tests call set_value(...) explicitly to override."""
+    _AUTOPAY.clear()
+    _AUTOPAY["submit_root_envelope"] = int(gf_module.ENVELOPE_BOND)
+    _AUTOPAY["create_fork"] = int(gf_module.FORK_CREATION_BOND)
+    _AUTOPAY["challenge_verdict"] = int(gf_module.CHALLENGE_BOND)
+
+
+def clear_autopay():
+    _AUTOPAY.clear()
+
+
+def fund(addr, amount):
+    """Credit an address in the mock native-GEN ledger."""
+    _CHAIN.fund(addr, amount)
+
+
+def balance(addr):
+    """Read an address's mock native-GEN balance."""
+    return _CHAIN.balance_of(addr)
+
+
+def contract_address():
+    """The fixed address the mock chain uses for the contract under test."""
+    return str(_CHAIN.current_contract)
+
+
+def reset_chain():
+    _CHAIN.reset()
 
 
 def get_render_failure():

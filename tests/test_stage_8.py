@@ -23,6 +23,8 @@ import _genlayer_shim as shim  # noqa: E402
 shim.install()
 
 import governance_fork as gf  # noqa: E402
+
+shim.autopay_bonds(gf)  # Stage 9: existing payable call sites pass no value
 import test_stage_6b as h  # noqa: E402
 import test_stage_7 as s7  # noqa: E402
 

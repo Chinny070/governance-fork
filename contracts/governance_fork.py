@@ -109,6 +109,19 @@ FORK_CREATION_BOND = 100000000000000000  # 0.1 * 10**18, provisional
 ENVELOPE_BOND = 100000000000000000
 CHALLENGE_BOND = 100000000000000000
 
+# Stage 9: bond disposition (wei / basis points). See
+# docs/STAGE_9_GEN_BOND_ECONOMICS.md. Every bond's refund + slash always
+# sums to exactly the locked amount. Slashed GEN stays in the contract
+# (the contract IS the treasury) and is tracked by treasury_pool; the
+# admin withdraws it to treasury_addr via withdraw_treasury.
+BOND_BPS_DENOM = 10000
+BOND_NOT_FAITHFUL_REFUND_BPS = 5000        # creator/proposer bond on NOT_FAITHFUL
+BOND_FAILED_CHALLENGE_REFUND_BPS = 5000    # challenger bond on RESOLVED_UNCHANGED
+# Bonus paid to a challenger whose challenge FLIPPED the verdict, drawn
+# from treasury_pool (capped at the pool balance). Half a challenge bond
+# -- the mirror image of the amount a losing challenger forfeits.
+CHALLENGER_FLIP_REWARD = 50000000000000000  # 0.05 * 10**18
+
 # Community-compatible fork-evidence quotas (Stage 5)
 CREATOR_EVIDENCE_CAP = 8
 COMMUNITY_EVIDENCE_CAP = 8
@@ -465,6 +478,12 @@ def _contrib_key(case_id_int: int, sender_hex: str) -> str:
     # counter. Uses ":" as separator; the address hex will not contain ":",
     # and decimal digits will not either, so the split is unambiguous.
     return str(case_id_int) + ":" + sender_hex
+
+
+def _bond_target_key(target_kind: str, target_id_int: int) -> str:
+    # Stage 9: bonds_by_target index key. target_kind is a fixed enum
+    # ("FORK" / "ROOT_ENVELOPE"); "/" appears in neither it nor a decimal id.
+    return target_kind + "/" + str(target_id_int)
 
 
 def _extract_host(url: str) -> str:
@@ -1518,6 +1537,15 @@ class Bond:
     settlement_kind: str
     settled: bool
     settled_at: u256
+    # Stage 9: 0 for FORK_CREATION / ENVELOPE bonds; the owning Challenge id
+    # for a CHALLENGE bond.
+    challenge_id: u256
+    # Stage 9: filled at settle_bond. refund + slash == amount always.
+    # reward is an extra bonus (challenger flip only), drawn from the
+    # treasury pool.
+    refund_amount: u256
+    slash_amount: u256
+    reward_amount: u256
 
 
 @allow_storage
@@ -1555,6 +1583,8 @@ class ConstantsView:
     challenge_window_seconds: u32
     retry_cooldown_seconds: u32
     max_retries_per_case: u32
+    challenger_flip_reward: u256
+    treasury_pool: u256
     treasury_addr: Address
     paused: bool
 
@@ -1587,6 +1617,8 @@ class Contract(gl.Contract):
     verdicts_by_root: TreeMap[u256, DynArray[u256]]
     challenges_by_fork: TreeMap[u256, DynArray[u256]]
     challenges_by_root: TreeMap[u256, DynArray[u256]]
+    # Stage 9: bond ids for a target. key = "<TARGET_KIND>/<target_id>".
+    bonds_by_target: TreeMap[str, DynArray[u256]]
 
     # Global uniqueness index for root import canonical form.
     # key = lowercase hex of RootProposal.import_fingerprint, value = root_id.
@@ -1611,6 +1643,11 @@ class Contract(gl.Contract):
     next_verdict_id: u256
     next_challenge_id: u256
     next_bond_id: u256
+
+    # Stage 9: slashed GEN retained by the contract (the contract IS the
+    # treasury). Incremented on every slash, decremented by challenger
+    # rewards and withdraw_treasury. Always <= self.balance.
+    treasury_pool: u256
 
     def __init__(self):
         # Stage 6b deploy-compatibility correction: treasury/admin is bound
@@ -1644,6 +1681,7 @@ class Contract(gl.Contract):
         self.next_verdict_id = u256(1)
         self.next_challenge_id = u256(1)
         self.next_bond_id = u256(1)
+        self.treasury_pool = u256(0)
 
     # ---------------------------------------------------------------------
     # Admin (minimal skeleton; withdrawal-safe pause behavior is Stage 11)
@@ -1859,6 +1897,14 @@ class Contract(gl.Contract):
         )
         if self.paused:
             raise gl.vm.UserError("paused")
+        # Stage 9: exact ENVELOPE_BOND must accompany the call (checked up
+        # front; the Bond record is written only after all checks pass).
+        if int(gl.message.value) != ENVELOPE_BOND:
+            raise gl.vm.UserError(
+                "exact ENVELOPE_BOND required (expected "
+                + str(int(ENVELOPE_BOND)) + ", got "
+                + str(int(gl.message.value)) + ")"
+            )
         if root_id not in self.roots:
             raise gl.vm.UserError("root not found")
         root = self.roots[root_id]
@@ -2039,6 +2085,11 @@ class Contract(gl.Contract):
             imported_at=root.imported_at,
             current_verdict_id=root.current_verdict_id,
         )
+        # Stage 9: capture the proposer's envelope bond (all checks passed).
+        self._capture_bond(
+            BOND_PURPOSE_ENVELOPE, TARGET_KIND_ROOT_ENVELOPE, root_id,
+            ENVELOPE_BOND, u256(0),
+        )
         return case_id
 
     @gl.public.write.payable
@@ -2114,6 +2165,16 @@ class Contract(gl.Contract):
         )
         if self.paused:
             raise gl.vm.UserError("paused")
+        # Stage 9: exact FORK_CREATION_BOND must accompany the call. Checked
+        # up front so a wrong amount reverts before any heavy validation;
+        # the Bond record itself is written only after every check passes
+        # (a revert returns the value and writes nothing).
+        if int(gl.message.value) != FORK_CREATION_BOND:
+            raise gl.vm.UserError(
+                "exact FORK_CREATION_BOND required (expected "
+                + str(int(FORK_CREATION_BOND)) + ", got "
+                + str(int(gl.message.value)) + ")"
+            )
         # Resolve parent + eligibility. The FAITHFUL gate is the FIRST
         # check on the parent's authority. There is no bypass.
         if parent_kind == PARENT_KIND_ROOT:
@@ -2212,6 +2273,11 @@ class Contract(gl.Contract):
         # Allocate + write
         fork_id = self.next_fork_id
         self.next_fork_id = u256(int(fork_id) + 1)
+        # All validation passed -- capture the creator bond now.
+        creator_bond_id = self._capture_bond(
+            BOND_PURPOSE_FORK_CREATION, TARGET_KIND_FORK, fork_id,
+            FORK_CREATION_BOND, u256(0),
+        )
         self.forks[fork_id] = Fork(
             parent_id=parent_id,
             parent_kind=parent_kind,
@@ -2229,7 +2295,7 @@ class Contract(gl.Contract):
             current_verdict_id=u256(0),
             child_count=u32(0),
             created_at=u256(0),
-            creator_bond_id=u256(0),
+            creator_bond_id=creator_bond_id,
         )
         if resolved_root_id not in self.forks_by_root:
             self.forks_by_root[resolved_root_id] = []
@@ -3372,6 +3438,13 @@ class Contract(gl.Contract):
     ) -> u256:
         if self.paused:
             raise gl.vm.UserError("paused")
+        # Stage 9: exact CHALLENGE_BOND must accompany the call.
+        if int(gl.message.value) != CHALLENGE_BOND:
+            raise gl.vm.UserError(
+                "exact CHALLENGE_BOND required (expected "
+                + str(int(CHALLENGE_BOND)) + ", got "
+                + str(int(gl.message.value)) + ")"
+            )
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
             if target_id not in self.roots:
                 raise gl.vm.UserError("root not found")
@@ -3444,6 +3517,10 @@ class Contract(gl.Contract):
             verdict_id=u256(0),
             challenge_id=challenge_id,
         )
+        bond_id = self._capture_bond(
+            BOND_PURPOSE_CHALLENGE, target_kind, target_id,
+            CHALLENGE_BOND, challenge_id,
+        )
         self.challenges[challenge_id] = Challenge(
             target_id=target_id,
             target_kind=target_kind,
@@ -3454,7 +3531,7 @@ class Contract(gl.Contract):
             original_verdict_id=governing_vid,
             replacement_verdict_id=u256(0),
             status=CHALLENGE_OPEN,
-            bond_id=u256(0),
+            bond_id=bond_id,
             opened_at=u256(0),
         )
         if ch_case_id not in self.evidence_by_case:
@@ -3527,9 +3604,174 @@ class Contract(gl.Contract):
                 new_status = FORK_FINALIZED_INVALID
             self._write_fork_status_verdict(target_id, new_status, governing_vid)
 
+    # ---------------------------------------------------------------------
+    # Stage 9: GEN bond economics
+    #
+    # Live-proven primitives only (contracts/probe/value_transfer_probe.py):
+    #   - @gl.public.write.payable + gl.message.value  -- capture
+    #   - self.balance                                 -- accounting
+    #   - gl.get_contract_at(<Address>).emit_transfer(value=<u256>)  -- payout
+    #
+    # The contract IS the treasury: slashed GEN stays in self.balance and is
+    # tracked by self.treasury_pool. Every bond's refund + slash == the
+    # locked amount exactly. A challenger-flip reward is an extra bonus
+    # drawn from treasury_pool (capped at the pool). bond.settled is set
+    # BEFORE any transfer -> replay-safe. settle_bond and withdraw_treasury
+    # are NOT paused-gated: pause blocks new exposure, never traps
+    # finalized funds. See docs/STAGE_9_GEN_BOND_ECONOMICS.md.
+    # ---------------------------------------------------------------------
+
+    def _capture_bond(self, purpose, target_kind, target_id, expected, challenge_id):
+        v = gl.message.value
+        if int(v) != int(expected):
+            raise gl.vm.UserError(
+                "exact bond required for " + purpose + " (expected "
+                + str(int(expected)) + ", got " + str(int(v)) + ")"
+            )
+        bond_id = self.next_bond_id
+        self.next_bond_id = u256(int(bond_id) + 1)
+        self.bonds[bond_id] = Bond(
+            owner=gl.message.sender_address,
+            amount=u256(int(v)),
+            target_id=target_id,
+            target_kind=target_kind,
+            purpose=purpose,
+            settlement_kind=BOND_UNSETTLED,
+            settled=False,
+            settled_at=u256(0),
+            challenge_id=challenge_id,
+            refund_amount=u256(0),
+            slash_amount=u256(0),
+            reward_amount=u256(0),
+        )
+        key = _bond_target_key(target_kind, int(target_id))
+        if key not in self.bonds_by_target:
+            self.bonds_by_target[key] = []
+        self.bonds_by_target[key].append(bond_id)
+        return bond_id
+
+    def _write_bond_settled(self, bond_id, bond, kind, refund, slash, reward):
+        self.bonds[bond_id] = Bond(
+            owner=bond.owner,
+            amount=bond.amount,
+            target_id=bond.target_id,
+            target_kind=bond.target_kind,
+            purpose=bond.purpose,
+            settlement_kind=kind,
+            settled=True,
+            settled_at=u256(0),
+            challenge_id=bond.challenge_id,
+            refund_amount=u256(int(refund)),
+            slash_amount=u256(int(slash)),
+            reward_amount=u256(int(reward)),
+        )
+
+    def _primary_bond_settled(self, target_kind, target_id):
+        # The creator/proposer bond for a target. Its settlement funds the
+        # treasury pool that a challenger-flip reward is drawn from, so a
+        # CHALLENGE bond may only be settled after it -- this makes the
+        # reward deterministic regardless of the order challenge bonds are
+        # settled in.
+        key = _bond_target_key(target_kind, int(target_id))
+        if key not in self.bonds_by_target:
+            return False
+        for bid in self.bonds_by_target[key]:
+            b = self.bonds[bid]
+            if b.purpose == BOND_PURPOSE_FORK_CREATION or b.purpose == BOND_PURPOSE_ENVELOPE:
+                return bool(b.settled)
+        return False
+
+    def _target_final_verdict_str(self, bond):
+        if bond.target_kind == TARGET_KIND_ROOT_ENVELOPE:
+            if bond.target_id not in self.roots:
+                raise gl.vm.UserError("bond target missing")
+            root = self.roots[bond.target_id]
+            if not self._envelope_is_final(root.envelope_status):
+                raise gl.vm.UserError("target not finalized")
+            gv = root.current_verdict_id
+        else:
+            if bond.target_id not in self.forks:
+                raise gl.vm.UserError("bond target missing")
+            fork = self.forks[bond.target_id]
+            if not self._fork_is_final(fork.status):
+                raise gl.vm.UserError("target not finalized")
+            gv = fork.current_verdict_id
+        if int(gv) == 0 or gv not in self.verdicts:
+            raise gl.vm.UserError("no governing verdict")
+        return self.verdicts[gv].verdict
+
     @gl.public.write
     def settle_bond(self, bond_id: u256) -> None:
-        raise gl.vm.UserError("stage-2: not implemented")
+        # Deterministic, replay-safe. NOT paused-gated.
+        if bond_id not in self.bonds:
+            raise gl.vm.UserError("bond not found")
+        bond = self.bonds[bond_id]
+        if bond.settled:
+            raise gl.vm.UserError("bond already settled")
+        final_verdict = self._target_final_verdict_str(bond)
+
+        amt = int(bond.amount)
+        refund = 0
+        slash = 0
+        reward = 0
+
+        if bond.purpose == BOND_PURPOSE_CHALLENGE:
+            ch_id = bond.challenge_id
+            if int(ch_id) == 0 or ch_id not in self.challenges:
+                raise gl.vm.UserError("challenge for bond missing")
+            res = self.challenges[ch_id].status
+            if res == CHALLENGE_OPEN or res == CHALLENGE_ADJUDICATING:
+                raise gl.vm.UserError("challenge not resolved")
+            if not self._primary_bond_settled(bond.target_kind, bond.target_id):
+                raise gl.vm.UserError(
+                    "settle the target's creator/proposer bond before a challenge bond"
+                )
+            if res == CHALLENGE_RESOLVED_FLIPPED:
+                refund = amt
+                pool = int(self.treasury_pool)
+                reward = CHALLENGER_FLIP_REWARD if pool >= CHALLENGER_FLIP_REWARD else pool
+                kind = BOND_SETTLED_CHALLENGER_REWARD if reward > 0 else BOND_SETTLED_FULL_REFUND
+            elif res == CHALLENGE_RESOLVED_UNCHANGED:
+                refund = (amt * BOND_FAILED_CHALLENGE_REFUND_BPS) // BOND_BPS_DENOM
+                slash = amt - refund
+                kind = BOND_SETTLED_PARTIAL_SLASH
+            else:
+                # RESOLVED_INVALID / RESOLVED_UNCLEAR -> not attributable.
+                refund = amt
+                kind = BOND_SETTLED_FULL_REFUND
+        else:
+            # FORK_CREATION / ENVELOPE -- disposition follows the final verdict.
+            if final_verdict == VERDICT_NOT_FAITHFUL:
+                refund = (amt * BOND_NOT_FAITHFUL_REFUND_BPS) // BOND_BPS_DENOM
+                slash = amt - refund
+                kind = BOND_SETTLED_PARTIAL_SLASH
+            else:
+                refund = amt
+                kind = BOND_SETTLED_FULL_REFUND
+
+        # Replay protection: mark settled BEFORE any value leaves.
+        self._write_bond_settled(bond_id, bond, kind, refund, slash, reward)
+        if slash > 0:
+            self.treasury_pool = u256(int(self.treasury_pool) + slash)
+        if reward > 0:
+            self.treasury_pool = u256(int(self.treasury_pool) - reward)
+        payout = refund + reward
+        if payout > 0:
+            gl.get_contract_at(bond.owner).emit_transfer(value=u256(int(payout)))
+
+    @gl.public.write
+    def withdraw_treasury(self, amount: u256) -> None:
+        # Admin (treasury_addr) drains accumulated slashed GEN. NOT
+        # paused-gated -- these are already-realized treasury funds.
+        if gl.message.sender_address != self.treasury_addr:
+            raise gl.vm.UserError("only treasury may withdraw")
+        a = int(amount)
+        if a <= 0:
+            raise gl.vm.UserError("amount must be positive")
+        if a > int(self.treasury_pool):
+            raise gl.vm.UserError("amount exceeds treasury pool")
+        self.treasury_pool = u256(int(self.treasury_pool) - a)
+        gl.get_contract_at(self.treasury_addr).emit_transfer(value=u256(a))
 
     # ---------------------------------------------------------------------
     # View ABI (Stage 2: signatures only; bodies raise UserError)
@@ -3712,7 +3954,25 @@ class Contract(gl.Contract):
 
     @gl.public.view
     def get_bond(self, bond_id: u256) -> Bond:
-        raise gl.vm.UserError("stage-2: not implemented")
+        if bond_id not in self.bonds:
+            raise gl.vm.UserError("bond not found")
+        return self.bonds[bond_id]
+
+    @gl.public.view
+    def list_bonds_by_target(
+        self, target_id: u256, target_kind: str, cursor: u256, limit: u32
+    ) -> PageIds:
+        if target_kind != TARGET_KIND_ROOT_ENVELOPE and target_kind != TARGET_KIND_FORK:
+            raise gl.vm.UserError("unknown target_kind")
+        key = _bond_target_key(target_kind, int(target_id))
+        if key not in self.bonds_by_target:
+            return PageIds(items=[], next_cursor=u256(0))
+        arr = self.bonds_by_target[key]
+        picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
+        items = []
+        for v in picked:
+            items.append(v)
+        return PageIds(items=items, next_cursor=u256(nxt))
 
     @gl.public.view
     def get_constants(self) -> ConstantsView:
@@ -3733,6 +3993,8 @@ class Contract(gl.Contract):
             challenge_window_seconds=u32(CHALLENGE_WINDOW_SECONDS),
             retry_cooldown_seconds=u32(RETRY_COOLDOWN_SECONDS),
             max_retries_per_case=u32(MAX_RETRIES_PER_CASE),
+            challenger_flip_reward=u256(CHALLENGER_FLIP_REWARD),
+            treasury_pool=self.treasury_pool,
             treasury_addr=self.treasury_addr,
             paused=self.paused,
         )

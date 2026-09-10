@@ -27,6 +27,8 @@ shim.install()
 
 import governance_fork as gf  # noqa: E402
 
+shim.autopay_bonds(gf)  # Stage 9: existing payable call sites pass no value
+
 
 UserError = shim.get_user_error()
 
@@ -689,16 +691,17 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         # gl.eq_principle.prompt_comparative + gl.nondet.exec_prompt are
         # legitimate (run_adjudication). prompt_non_comparative, web.get and
         # native GEN transfer remain banned.
-        import pathlib
+        import pathlib, re
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative",
-                       "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative"):
             self.assertNotIn(banned, src, banned)
+        self.assertFalse(re.search(r"(?<!emit_)transfer\(", src), "bare transfer(")
+        self.assertIn("gl.get_contract_at(", src)
 
-    def test_no_gl_message_value(self):
+    def test_gl_message_value_present_for_bond_capture(self):
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        self.assertNotIn("gl.message.value", src)
+        self.assertIn("gl.message.value", src)
 
     def test_no_adjudicate_implementation(self):
         shim.reset_message_context()

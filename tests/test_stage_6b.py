@@ -28,6 +28,8 @@ shim.install()
 
 import governance_fork as gf  # noqa: E402
 
+shim.autopay_bonds(gf)  # Stage 9: existing payable call sites pass no value
+
 
 UserError = shim.get_user_error()
 RenderFailure = shim.get_render_failure()
@@ -1344,15 +1346,20 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative"):
             self.assertNotIn(banned, src)
 
-    def test_no_gl_message_value(self):
+    def test_gl_message_value_present_for_bond_capture(self):
+        # Stage 9: gl.message.value IS the sanctioned bond-capture read.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        self.assertNotIn("gl.message.value", src)
+        self.assertIn("gl.message.value", src)
 
-    def test_no_transfer(self):
-        import pathlib
+    def test_no_bare_transfer(self):
+        # Stage 9: gl.get_contract_at(...).emit_transfer(value=...) is the
+        # only sanctioned value payout; a bare transfer( is still banned.
+        import pathlib, re
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        self.assertNotIn("transfer(", src)
+        self.assertFalse(re.search(r"(?<!emit_)transfer\(", src))
+        self.assertIn("gl.get_contract_at(", src)
+        self.assertIn(".emit_transfer(value=", src)
 
     def test_uses_render_and_strict_eq(self):
         import pathlib
@@ -1377,16 +1384,12 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.adjudicate(shim.u256(1))
 
-    def test_bond_settlement_still_unimplemented(self):
+    def test_no_stage_placeholders_remain(self):
+        # By Stage 9 every production public method is implemented -- no
+        # 'stage-2: not implemented' placeholder bodies remain anywhere.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        # Stage 8 implements finalize() and challenge_verdict(); GEN bond
-        # economics (settle_bond) remain a later-stage placeholder.
-        self.assertIn(
-            'def settle_bond(self, bond_id: u256) -> None:\n'
-            '        raise gl.vm.UserError("stage-2: not implemented")',
-            src,
-        )
+        self.assertNotIn("stage-2: not implemented", src)
 
 
 if __name__ == "__main__":

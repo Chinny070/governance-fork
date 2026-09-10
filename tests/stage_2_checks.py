@@ -78,14 +78,18 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
     #     is the sanctioned semantic-adjudication pathway (run_adjudication);
     #     the primitive + evidence budget were chosen from a live isolated
     #     probe, not pre-decided (see the Stage 7 semantic probe report).
-    # Still banned: web.get (never the fallback), prompt_non_comparative
-    # (probe-rejected: markdown-fenced JSON -> strict-parse failures),
-    # gl.message.value / transfer( (no native GEN economics yet).
+    # Stage 9: native GEN economics -- gl.message.value (payable capture)
+    # and gl.get_contract_at(<Address>).emit_transfer(value=<u256>) (payout)
+    # are the ONLY sanctioned value APIs; both were live-proven by
+    # contracts/probe/value_transfer_probe.py on the pinned runtime.
+    # Still banned: web.get; prompt_non_comparative (probe-rejected:
+    # markdown-fenced JSON -> strict-parse failures); a bare `transfer(`
+    # that is not `emit_transfer(` (no unsupported / ad-hoc value API).
     code = _code_only(source)
     banned = [
         r"web\.get\(",
         r"gl\.eq_principle\.prompt_non_comparative",
-        r"transfer\(",
+        r"(?<!emit_)transfer\(",
     ]
     hits = []
     for pat in banned:
@@ -101,12 +105,15 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
         "gl.eq_principle.prompt_comparative(",
         "gl.nondet.exec_prompt(",
         'response_format="json"',
+        "gl.get_contract_at(",
+        ".emit_transfer(value=",
     ):
         if needle not in code:
             return False, f"expected sanctioned call/arg not found: {needle}"
     return True, (
-        "render/strict_eq + prompt_comparative/exec_prompt(json) present; "
-        "web.get / prompt_non_comparative / transfer absent"
+        "render/strict_eq + prompt_comparative/exec_prompt(json) + "
+        "get_contract_at/emit_transfer present; web.get / "
+        "prompt_non_comparative / bare transfer absent"
     )
 
 
@@ -125,15 +132,39 @@ def check_semantic_calls_unwrapped(source: str) -> tuple[bool, str]:
     return True, "no try/except around nondet/semantic calls"
 
 
-def check_no_message_value_read(source: str) -> tuple[bool, str]:
-    # gl.message.value must not appear in Stage 2 (native GEN read API).
-    hits = [
-        f"line {source[: m.start()].count(chr(10)) + 1}"
-        for m in re.finditer(r"gl\.message\.value", source)
-    ]
-    if hits:
-        return False, "gl.message.value referenced: " + ", ".join(hits)
-    return True, "no gl.message.value reads"
+def check_message_value_only_in_writes(source: str) -> tuple[bool, str]:
+    # Stage 9: gl.message.value IS the sanctioned bond-capture read. It must
+    # be present, and it must never appear inside a @gl.public.view method
+    # (view methods take no value).
+    code = _code_only(source)
+    if "gl.message.value" not in code:
+        return False, "gl.message.value expected (bond capture) but not found"
+    tree = ast.parse(source)
+    contract = None
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Contract":
+            contract = node
+            break
+    assert contract is not None
+    for item in contract.body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        is_view = False
+        for d in item.decorator_list:
+            path = []
+            cur = d
+            while isinstance(cur, ast.Attribute):
+                path.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                path.append(cur.id)
+            if tuple(reversed(path)) == ("gl", "public", "view"):
+                is_view = True
+        if is_view:
+            seg = ast.get_source_segment(source, item) or ""
+            if "gl.message.value" in seg:
+                return False, f"gl.message.value read inside view method {item.name}"
+    return True, "gl.message.value present, never in a view method"
 
 
 def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
@@ -188,11 +219,12 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 14  # Stage 6b: +close_evidence, +fetch_evidence,
+    expected_write = 15  # Stage 6b: +close_evidence, +fetch_evidence,
                          # +seal_evidence, +abort_case, -freeze_evidence,
                          # -freeze_case (11 - 2 + 4 = 13).
-                         # Stage 7: +run_adjudication (13 + 1 = 14).
-    expected_view = 16
+                         # Stage 7: +run_adjudication (-> 14).
+                         # Stage 9: +withdraw_treasury (-> 15).
+    expected_view = 17   # Stage 9: +list_bonds_by_target (16 -> 17).
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin
     ok = (
@@ -429,12 +461,24 @@ def check_no_slashed_full_kind(source: str) -> tuple[bool, str]:
     return True, "no SETTLED_FULL_SLASH"
 
 
-def check_no_reward_amount_field(source: str) -> tuple[bool, str]:
-    # Challenger reward source is unresolved; no reward_due / reward_amount liability.
-    for banned in ("reward_due", "reward_amount", "challenger_reward_amount"):
-        if banned in source:
+def check_reward_is_pool_funded(source: str) -> tuple[bool, str]:
+    # Stage 9: a challenger-flip reward is allowed, but it must be drawn
+    # from (and capped by) the on-contract treasury_pool -- never an
+    # unfunded liability. Guard against the old unresolved-source names,
+    # and require the pool-cap + pool-debit pattern around the reward.
+    code = _code_only(source)
+    for banned in ("reward_due", "challenger_reward_amount", "reward_owed"):
+        if banned in code:
             return False, f"unfunded reward field present: {banned}"
-    return True, "no unfunded reward liability"
+    if "reward_amount" in code:
+        need = [
+            "pool >= CHALLENGER_FLIP_REWARD",          # cap at pool balance
+            "treasury_pool = u256(int(self.treasury_pool) - reward)",  # pool debit
+        ]
+        missing = [n for n in need if n not in code]
+        if missing:
+            return False, "reward present but not pool-capped/debited: " + "; ".join(missing)
+    return True, "challenger reward (if any) is treasury_pool-funded and capped"
 
 
 def try_genvm_lint() -> tuple[str, str]:
@@ -459,14 +503,14 @@ def main() -> int:
         ("lf line endings", check_lf_line_endings(raw)),
         ("no prohibited calls", check_no_prohibited_calls(source)),
         ("semantic/nondet calls not try-wrapped", check_semantic_calls_unwrapped(source)),
-        ("no gl.message.value read", check_no_message_value_read(source)),
+        ("gl.message.value only in writes", check_message_value_only_in_writes(source)),
         ("no duplicate abi names", check_no_duplicate_abi_names(source)),
         ("abi counts", check_abi_counts(source)),
         ("no dataclass-typed public inputs", check_no_dataclass_inputs(source)),
         ("no unchanged delta kind", check_no_unchanged_delta_kind(source)),
         ("enum uniqueness", check_enum_uniqueness(source)),
         ("no full-slash kind", check_no_slashed_full_kind(source)),
-        ("no unfunded reward liability", check_no_reward_amount_field(source)),
+        ("challenger reward is treasury-pool funded", check_reward_is_pool_funded(source)),
     ]
     passed = 0
     failed = 0

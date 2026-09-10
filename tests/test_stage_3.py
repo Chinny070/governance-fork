@@ -24,6 +24,8 @@ shim.install()
 
 import governance_fork as gf  # noqa: E402
 
+shim.autopay_bonds(gf)  # Stage 9: existing payable call sites pass no value
+
 
 def _envelope(
     objective="Fund ecosystem developer work.",
@@ -601,25 +603,28 @@ class CaseAndIndexTests(unittest.TestCase):
 
 class ProhibitedBehaviorTests(unittest.TestCase):
     def test_source_has_no_disallowed_nondet_or_gen_calls(self):
-        # Stage 6b baseline: gl.nondet.web.render(...) + gl.eq_principle.
-        # strict_eq(...) are legitimate (fetch_evidence).
-        # Stage 7 baseline: gl.eq_principle.prompt_comparative(...) wrapping
-        # gl.nondet.exec_prompt(..., response_format="json") is legitimate
-        # (run_adjudication only -- the chosen semantic consensus primitive).
-        # web.get, prompt_non_comparative, and native GEN transfer remain
-        # banned.
-        import pathlib
+        # Stage 6b: gl.nondet.web.render + gl.eq_principle.strict_eq
+        # (fetch_evidence). Stage 7: gl.eq_principle.prompt_comparative +
+        # gl.nondet.exec_prompt(response_format="json") (run_adjudication).
+        # Stage 9: gl.get_contract_at(...).emit_transfer(value=...) is the
+        # sanctioned, live-proven payout primitive. web.get and
+        # prompt_non_comparative remain banned; a bare `transfer(` that is
+        # not `emit_transfer(` remains banned.
+        import pathlib, re
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative",
-                       "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative"):
             self.assertNotIn(banned, src, f"banned substring present: {banned}")
+        self.assertFalse(re.search(r"(?<!emit_)transfer\(", src), "bare transfer( present")
         self.assertIn("gl.nondet.web.render(", src)
         self.assertIn("gl.eq_principle.strict_eq(", src)
+        self.assertIn("gl.get_contract_at(", src)
 
-    def test_source_has_no_gl_message_value(self):
+    def test_source_gl_message_value_only_for_bond_capture(self):
+        # Stage 9: gl.message.value IS the bond-capture read. It must be
+        # present and never inside a @gl.public.view method.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        self.assertNotIn("gl.message.value", src)
+        self.assertIn("gl.message.value", src)
 
     def test_create_fork_rejects_when_root_not_faithful(self):
         # Stage 4 lands a real create_fork body, but its first check is
