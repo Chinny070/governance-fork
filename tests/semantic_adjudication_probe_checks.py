@@ -238,14 +238,19 @@ def _attr_chain(node):
     return out
 
 
-def check_governance_fork_untouched():
+def check_governance_fork_isolated_from_probe():
+    # The probe served its purpose (primitive + evidence budget chosen from
+    # live results); Stage 7 is now implemented in governance_fork.py, so the
+    # earlier "SHA-256 unchanged" lock no longer applies. What still must
+    # hold: the probe stays a standalone artifact and the production
+    # contract never imports or references it.
     if not PROD_PATH.exists():
         return False, "governance_fork.py missing"
+    prod = PROD_PATH.read_text()
+    if "semantic_adjudication_probe" in prod:
+        return False, "governance_fork.py references the probe module"
     sha = hashlib.sha256(PROD_PATH.read_bytes()).hexdigest()
-    expected = "cbfe8cb0dc89ab3ae5d4aefa31f1a77e1ca47ecf4db737ae4d5264310194f004"
-    if sha != expected:
-        return False, f"governance_fork.py SHA-256 changed: {sha}"
-    return True, f"governance_fork.py unchanged, sha256={sha}"
+    return True, f"probe not referenced by governance_fork.py; contract sha256={sha}"
 
 
 def main():
@@ -268,7 +273,7 @@ def main():
         ("no try/except around semantic calls", check_no_try_except_around_semantic_calls(source)),
         ("scalar-only public inputs", check_scalar_only_public_inputs(source)),
         ("abi shape", check_abi_shape(source)),
-        ("governance_fork.py untouched", check_governance_fork_untouched()),
+        ("governance_fork.py isolated from probe", check_governance_fork_isolated_from_probe()),
     ]
     passed = failed = 0
     for name, (ok, detail) in checks:

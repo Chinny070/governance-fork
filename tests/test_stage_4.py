@@ -742,12 +742,14 @@ class PublicSafetyTests(unittest.TestCase):
 class ProhibitedBehaviorTests(unittest.TestCase):
     def test_no_disallowed_nondet_or_gen_calls(self):
         # Stage 6b baseline: gl.nondet.web.render + gl.eq_principle.strict_eq
-        # are now legitimate (fetch_evidence only).
+        # are legitimate (fetch_evidence). Stage 7 baseline:
+        # gl.eq_principle.prompt_comparative + gl.nondet.exec_prompt are
+        # legitimate (run_adjudication). prompt_non_comparative, web.get and
+        # native GEN transfer remain banned.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
-                       "gl.eq_principle.prompt_non_comparative",
-                       "gl.nondet.exec_prompt", "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative",
+                       "transfer("):
             self.assertNotIn(banned, src)
 
     def test_no_gl_message_value(self):

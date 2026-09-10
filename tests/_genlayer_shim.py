@@ -10,6 +10,7 @@ Install by calling `install()` before importing the contract module.
 
 from __future__ import annotations
 
+import json as _json
 import sys
 import types
 from dataclasses import dataclass as _stdlib_dataclass  # noqa: F401 -- for symmetry
@@ -224,21 +225,96 @@ class _WebNamespace:
         return self._registry.render(url, mode=mode, wait_after_loaded=wait_after_loaded)
 
 
+class SemanticUndetermined(Exception):
+    """Local stand-in for a semantic-consensus Undetermined outcome
+    (gl.eq_principle.prompt_comparative fails to converge). On the live
+    runtime this surfaces as a transaction revert that commits zero state;
+    here it is simply raised out of the nondet call so the contract's
+    no-try/except discipline propagates it. LOCAL LOGIC TEST substitute
+    only -- the isolated semantic probe supplies the live evidence.
+    """
+    pass
+
+
+class _MockSemanticRegistry:
+    """Deterministic, test-configured stand-in for gl.nondet.exec_prompt.
+
+    LOCAL LOGIC TEST infrastructure only. Exercises the contract's
+    deterministic prompt-assembly, strict-parse, verdict-aggregation and
+    state-transition logic around a semantic call. Does NOT exercise,
+    simulate, or prove anything about live exec_prompt / prompt_comparative
+    behavior, consensus, Undetermined frequency, or response_format="json"
+    return shape -- that is the isolated semantic probe's exclusive domain
+    (see docs/STAGE_7_SEMANTIC_PROBE_RUNBOOK.md and its report).
+    """
+
+    def __init__(self):
+        self._queue = []      # FIFO of explicit responses
+        self._default = None  # used when the queue is empty
+        self._undetermined = False
+        self.calls = []       # prompts seen, in order
+
+    def enqueue(self, resp):
+        self._queue.append(resp)
+
+    def set_default(self, resp):
+        self._default = resp
+
+    def set_undetermined(self, flag=True):
+        self._undetermined = flag
+
+    def reset(self):
+        self._queue = []
+        self._default = None
+        self._undetermined = False
+        self.calls = []
+
+    def exec_prompt(self, prompt, response_format="text", image=None, images=None):
+        self.calls.append(prompt)
+        if self._undetermined:
+            raise SemanticUndetermined("mock semantic consensus did not converge")
+        if self._queue:
+            resp = self._queue.pop(0)
+        elif self._default is not None:
+            resp = self._default
+        else:
+            raise RenderFailure("no mock semantic response configured")
+        if response_format == "json":
+            if isinstance(resp, str):
+                return _json.loads(resp)
+            return resp
+        if isinstance(resp, (dict, list)):
+            return _json.dumps(resp)
+        return resp
+
+
 class _NondetNamespace:
-    def __init__(self, registry):
+    def __init__(self, registry, semantic_registry):
         self.web = _WebNamespace(registry)
+        self._semantic = semantic_registry
+
+    def exec_prompt(self, prompt, response_format="text", image=None, images=None):
+        return self._semantic.exec_prompt(
+            prompt, response_format=response_format, image=image, images=images
+        )
 
 
 class _EqPrincipleNamespace:
-    """LOCAL LOGIC TEST stand-in. strict_eq here just calls the leader
-    function directly -- there is no validator set, no rotation, no
-    Undetermined outcome in this shim. It exists only to exercise the
-    contract's deterministic post-processing of whatever the leader
-    function returns (or the failure path if it raises).
+    """LOCAL LOGIC TEST stand-in. strict_eq / prompt_comparative here just
+    call the leader function directly -- there is no validator set, no
+    rotation, no Undetermined outcome produced by this shim itself (a
+    configured _MockSemanticRegistry may still raise SemanticUndetermined
+    from inside the leader fn). Exists only to exercise the contract's
+    deterministic handling of whatever the leader function returns or
+    raises.
     """
 
     @staticmethod
     def strict_eq(leader_fn):
+        return leader_fn()
+
+    @staticmethod
+    def prompt_comparative(leader_fn, principle):
         return leader_fn()
 
 
@@ -249,7 +325,8 @@ class _GLNamespace:
         self.message = _MessageContext()
         self.Contract = _Contract
         self.mock_web = _MockWebRegistry()
-        self.nondet = _NondetNamespace(self.mock_web)
+        self.mock_semantic = _MockSemanticRegistry()
+        self.nondet = _NondetNamespace(self.mock_web, self.mock_semantic)
         self.storage = _StorageNamespace
         self.eq_principle = _EqPrincipleNamespace()
 
@@ -342,6 +419,21 @@ def get_mock_web():
     to control fetch_evidence's behavior in local tests.
     """
     return sys.modules["genlayer"].gl.mock_web
+
+
+def get_mock_semantic():
+    """The active gl.nondet.exec_prompt mock registry. Use enqueue(resp) /
+    set_default(resp) / set_undetermined(True) / reset() to control
+    run_adjudication's behavior in local tests. LOCAL LOGIC TEST only.
+    """
+    return sys.modules["genlayer"].gl.mock_semantic
+
+
+def get_semantic_undetermined():
+    """SemanticUndetermined exception class -- raised by the mock semantic
+    registry when set_undetermined(True). LOCAL LOGIC TEST infrastructure.
+    """
+    return SemanticUndetermined
 
 
 def get_gl():

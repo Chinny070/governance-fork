@@ -602,13 +602,16 @@ class CaseAndIndexTests(unittest.TestCase):
 class ProhibitedBehaviorTests(unittest.TestCase):
     def test_source_has_no_disallowed_nondet_or_gen_calls(self):
         # Stage 6b baseline: gl.nondet.web.render(...) + gl.eq_principle.
-        # strict_eq(...) are now legitimate (fetch_evidence only).
-        # web.get, semantic prompts, and native GEN transfer remain banned.
+        # strict_eq(...) are legitimate (fetch_evidence).
+        # Stage 7 baseline: gl.eq_principle.prompt_comparative(...) wrapping
+        # gl.nondet.exec_prompt(..., response_format="json") is legitimate
+        # (run_adjudication only -- the chosen semantic consensus primitive).
+        # web.get, prompt_non_comparative, and native GEN transfer remain
+        # banned.
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
-                       "gl.eq_principle.prompt_non_comparative",
-                       "gl.nondet.exec_prompt", "transfer("):
+        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative",
+                       "transfer("):
             self.assertNotIn(banned, src, f"banned substring present: {banned}")
         self.assertIn("gl.nondet.web.render(", src)
         self.assertIn("gl.eq_principle.strict_eq(", src)

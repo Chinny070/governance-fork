@@ -52,34 +52,77 @@ def check_lf_line_endings(raw: bytes) -> tuple[bool, str]:
     return True, "LF only"
 
 
+def _code_only(source: str) -> str:
+    """source with '#' comments and def/class/module docstrings removed, so
+    substring gates match real code, not prose that discusses banned APIs."""
+    out_lines = []
+    for line in source.split("\n"):
+        i = line.find("#")
+        out_lines.append(line if i < 0 else line[:i])
+    code = "\n".join(out_lines)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            d = ast.get_docstring(node, clean=False)
+            if d:
+                code = code.replace(d, "")
+    return code
+
+
 def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
-    # Baseline shifted at Stage 6b: gl.nondet.web.render(...) wrapped in
-    # gl.eq_principle.strict_eq(...) is now the sanctioned production
-    # evidence-retrieval pathway (fetch_evidence only). Everything else
-    # remains banned: web.get (never the fallback), prompt_comparative /
-    # prompt_non_comparative / exec_prompt (no semantic adjudication in
-    # Stage 6b), gl.message.value / transfer( (no native GEN logic yet).
+    # Baseline at Stage 7:
+    #   - gl.nondet.web.render(...) wrapped in gl.eq_principle.strict_eq(...)
+    #     is the sanctioned evidence-retrieval pathway (fetch_evidence).
+    #   - gl.eq_principle.prompt_comparative(fn, ...) with
+    #     fn == lambda: gl.nondet.exec_prompt(prompt, response_format="json")
+    #     is the sanctioned semantic-adjudication pathway (run_adjudication);
+    #     the primitive + evidence budget were chosen from a live isolated
+    #     probe, not pre-decided (see the Stage 7 semantic probe report).
+    # Still banned: web.get (never the fallback), prompt_non_comparative
+    # (probe-rejected: markdown-fenced JSON -> strict-parse failures),
+    # gl.message.value / transfer( (no native GEN economics yet).
+    code = _code_only(source)
     banned = [
         r"web\.get\(",
-        r"gl\.eq_principle\.prompt_comparative",
         r"gl\.eq_principle\.prompt_non_comparative",
-        r"gl\.nondet\.exec_prompt",
         r"transfer\(",
     ]
     hits = []
     for pat in banned:
-        for m in re.finditer(pat, source):
-            line = source[: m.start()].count("\n") + 1
+        for m in re.finditer(pat, code):
+            line = code[: m.start()].count("\n") + 1
             hits.append(f"{pat} at line {line}")
     if hits:
         return False, "; ".join(hits)
-    # Positive check: fetch_evidence must actually use the sanctioned
-    # render + strict_eq pathway (else the whole Stage 6b claim is empty).
-    if "gl.nondet.web.render(" not in source:
-        return False, "gl.nondet.web.render( expected but not found"
-    if "gl.eq_principle.strict_eq(" not in source:
-        return False, "gl.eq_principle.strict_eq( expected but not found"
-    return True, "web.render/strict_eq present; all other nondet/GEN/semantic calls absent"
+    # Positive checks: the sanctioned pathways must actually be present.
+    for needle in (
+        "gl.nondet.web.render(",
+        "gl.eq_principle.strict_eq(",
+        "gl.eq_principle.prompt_comparative(",
+        "gl.nondet.exec_prompt(",
+        'response_format="json"',
+    ):
+        if needle not in code:
+            return False, f"expected sanctioned call/arg not found: {needle}"
+    return True, (
+        "render/strict_eq + prompt_comparative/exec_prompt(json) present; "
+        "web.get / prompt_non_comparative / transfer absent"
+    )
+
+
+def check_semantic_calls_unwrapped(source: str) -> tuple[bool, str]:
+    """The semantic / nondet calls must NOT be wrapped in try/except -- an
+    Undetermined outcome or a strict-parse rejection must surface as a
+    transaction revert (zero state committed), never be swallowed."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            seg = ast.get_source_segment(source, node) or ""
+            for needle in ("exec_prompt", "prompt_comparative", "strict_eq",
+                           "web.render"):
+                if needle in seg:
+                    return False, f"try/except wraps a nondet/semantic call ({needle})"
+    return True, "no try/except around nondet/semantic calls"
 
 
 def check_no_message_value_read(source: str) -> tuple[bool, str]:
@@ -145,9 +188,10 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 13  # Stage 6b: +close_evidence, +fetch_evidence,
+    expected_write = 14  # Stage 6b: +close_evidence, +fetch_evidence,
                          # +seal_evidence, +abort_case, -freeze_evidence,
-                         # -freeze_case (11 - 2 + 4 = 13)
+                         # -freeze_case (11 - 2 + 4 = 13).
+                         # Stage 7: +run_adjudication (13 + 1 = 14).
     expected_view = 16
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin
@@ -388,6 +432,7 @@ def main() -> int:
         ("ascii only", check_ascii_only(raw)),
         ("lf line endings", check_lf_line_endings(raw)),
         ("no prohibited calls", check_no_prohibited_calls(source)),
+        ("semantic/nondet calls not try-wrapped", check_semantic_calls_unwrapped(source)),
         ("no gl.message.value read", check_no_message_value_read(source)),
         ("no duplicate abi names", check_no_duplicate_abi_names(source)),
         ("abi counts", check_abi_counts(source)),

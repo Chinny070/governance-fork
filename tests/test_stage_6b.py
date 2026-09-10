@@ -201,7 +201,7 @@ class CloseEvidenceTests(unittest.TestCase):
             retrieval_disposition_fingerprint=b"",
             evidence_set_fingerprint=b"", adjudication_dimensions_version=shim.u32(1),
             case_fingerprint=b"", state=gf.CASE_OPEN, retry_count=shim.u32(0),
-            last_attempt_at=shim.u256(0),
+            last_attempt_at=shim.u256(0), verdict_id=shim.u256(0),
         )
         with self.assertRaises(UserError):
             c.close_evidence(case_id)
@@ -1336,9 +1336,11 @@ class ProhibitedBehaviorTests(unittest.TestCase):
     def test_no_web_get_or_semantic_prompt_calls(self):
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        for banned in ("web.get(", "gl.eq_principle.prompt_comparative",
-                       "gl.eq_principle.prompt_non_comparative",
-                       "gl.nondet.exec_prompt"):
+        # Stage 7 baseline: gl.eq_principle.prompt_comparative wrapping
+        # gl.nondet.exec_prompt(..., response_format="json") is the chosen
+        # semantic consensus primitive (run_adjudication only). web.get and
+        # prompt_non_comparative remain banned.
+        for banned in ("web.get(", "gl.eq_principle.prompt_non_comparative"):
             self.assertNotIn(banned, src)
 
     def test_no_gl_message_value(self):
