@@ -23,8 +23,12 @@ the challenger-flip reward is always funded by a real prior slash.
 > **StudioNet limitation (network, not contract):** on StudioNet an
 > IC→EOA `emit_transfer` child tx finalizes as `Contract <eoa> not found`
 > and does not credit the EOA (GenLayer docs: "no EVM layer or ghost
-> contracts in Studio"). The bond stage is therefore validated on
-> **Testnet Bradbury**, which has the real chain layer.
+> contracts in Studio"). The bond stage was validated on StudioNet with a
+> genlayer-js value path: every **contract-side** movement is exact and
+> proven (capture into `self.balance`, deduction on settlement, treasury
+> accounting); the final EOA-landing leg is the documented StudioNet
+> simulation gap. On Testnet Bradbury / mainnet (real chain layer) the
+> EOA credit lands.
 
 ## 1a. Capture model — corrected after a live StudioNet finding
 
@@ -39,10 +43,14 @@ fails.
 Capture is therefore split into lock → consume:
 
 1. **`lock_bond(purpose) -> u256`** — the **only** payable method. Records
-   a `Bond` for whatever value was sent and returns its id. It cannot
-   revert once value is attached: the only rejections are an unknown
-   `purpose` or a **zero** value, neither of which traps GEN. The bond
-   starts **UNASSIGNED** (`target_id == 0`), owned by the sender.
+   a `Bond` for whatever value was sent and returns its id. It has
+   **exactly one rejection**, `value == 0`, which traps nothing: it is
+   **not** paused-gated (a second live finding — a paused revert trapped
+   0.1 GEN), and an unknown `purpose` is stored as
+   `BOND_PURPOSE_UNRECOGNISED` rather than reverting. The bond starts
+   **UNASSIGNED** (`target_id == 0`), owned by the sender. Pause still
+   blocks new exposure because the consuming methods are paused-gated; a
+   bond locked during a pause just sits UNASSIGNED, 100 %-refundable.
 2. **`create_fork` / `submit_root_envelope` / `challenge_verdict`** — now
    **non-payable**, each takes a leading `bond_id`. They `_consume_bond`
    (owner match, purpose match, unassigned, exact amount, not settled) and
