@@ -117,6 +117,38 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
     )
 
 
+def check_lock_bond_is_only_payable(source: str) -> tuple[bool, str]:
+    # Stage 9 capture-model correction: on the pinned runtime a payable
+    # call that reverts traps the attached value. So exactly one payable
+    # method exists -- lock_bond -- and it cannot revert once value is
+    # attached (only rejects purpose / zero value). Everything gated is
+    # non-payable and consumes a pre-locked bond.
+    tree = ast.parse(source)
+    contract = None
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Contract":
+            contract = node
+            break
+    assert contract is not None
+    payable = []
+    for item in contract.body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        for d in item.decorator_list:
+            path = []
+            cur = d
+            while isinstance(cur, ast.Attribute):
+                path.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                path.append(cur.id)
+            if tuple(reversed(path)) == ("gl", "public", "write", "payable"):
+                payable.append(item.name)
+    if payable != ["lock_bond"]:
+        return False, f"payable methods must be exactly ['lock_bond'], got {payable}"
+    return True, "lock_bond is the only payable method"
+
+
 def check_semantic_calls_unwrapped(source: str) -> tuple[bool, str]:
     """The semantic / nondet calls must NOT be wrapped in try/except -- an
     Undetermined outcome or a strict-parse rejection must surface as a
@@ -219,11 +251,13 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 15  # Stage 6b: +close_evidence, +fetch_evidence,
+    expected_write = 16  # Stage 6b: +close_evidence, +fetch_evidence,
                          # +seal_evidence, +abort_case, -freeze_evidence,
                          # -freeze_case (11 - 2 + 4 = 13).
                          # Stage 7: +run_adjudication (-> 14).
-                         # Stage 9: +withdraw_treasury (-> 15).
+                         # Stage 9: +withdraw_treasury +lock_bond (-> 16);
+                         # submit_root_envelope / create_fork /
+                         # challenge_verdict lose .payable (count unchanged).
     expected_view = 17   # Stage 9: +list_bonds_by_target (16 -> 17).
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin
@@ -502,6 +536,7 @@ def main() -> int:
         ("ascii only", check_ascii_only(raw)),
         ("lf line endings", check_lf_line_endings(raw)),
         ("no prohibited calls", check_no_prohibited_calls(source)),
+        ("lock_bond is the only payable method", check_lock_bond_is_only_payable(source)),
         ("semantic/nondet calls not try-wrapped", check_semantic_calls_unwrapped(source)),
         ("gl.message.value only in writes", check_message_value_only_in_writes(source)),
         ("no duplicate abi names", check_no_duplicate_abi_names(source)),

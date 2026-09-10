@@ -26,20 +26,43 @@ the challenger-flip reward is always funded by a real prior slash.
 > contracts in Studio"). The bond stage is therefore validated on
 > **Testnet Bradbury**, which has the real chain layer.
 
+## 1a. Capture model — corrected after a live StudioNet finding
+
+Live test: a `@gl.public.write.payable` call that **reverts** on the
+pinned runtime **keeps the attached native value in the contract** while
+rolling back all state — the value is trapped with no `Bond` record
+(observed: sender −0.1 GEN, contract +0.1 GEN, `create_fork` reverted,
+no fork, no bond). So "check `gl.message.value` up front, revert on
+mismatch" traps a correctly-sized bond the moment any *later* validation
+fails.
+
+Capture is therefore split into lock → consume:
+
+1. **`lock_bond(purpose) -> u256`** — the **only** payable method. Records
+   a `Bond` for whatever value was sent and returns its id. It cannot
+   revert once value is attached: the only rejections are an unknown
+   `purpose` or a **zero** value, neither of which traps GEN. The bond
+   starts **UNASSIGNED** (`target_id == 0`), owned by the sender.
+2. **`create_fork` / `submit_root_envelope` / `challenge_verdict`** — now
+   **non-payable**, each takes a leading `bond_id`. They `_consume_bond`
+   (owner match, purpose match, unassigned, exact amount, not settled) and
+   then `_assign_bond` (set `target_id`, index into
+   `bonds_by_target["<KIND>/<id>"]`). Being non-payable, any revert in
+   these is safe — no value is attached. A wrong-amount / wrong-purpose /
+   unused / rejected bond stays UNASSIGNED and is **always 100 %
+   refundable** via `settle_bond`.
+
 ## 2. Bonds
 
-| bond | captured by | amount | owner |
+| bond | flow | amount | owner |
 |---|---|---|---|
-| `ENVELOPE` | `submit_root_envelope` (payable) | `ENVELOPE_BOND` (0.1 GEN) | root proposer |
-| `FORK_CREATION` | `create_fork` (payable) | `FORK_CREATION_BOND` (0.1 GEN) | fork creator |
-| `CHALLENGE` | `challenge_verdict` (payable) | `CHALLENGE_BOND` (0.1 GEN) | challenger |
+| `ENVELOPE` | `lock_bond("ENVELOPE")` → `submit_root_envelope(bond_id, …)` | `ENVELOPE_BOND` (0.1 GEN) | root proposer |
+| `FORK_CREATION` | `lock_bond("FORK_CREATION")` → `create_fork(bond_id, …)` | `FORK_CREATION_BOND` (0.1 GEN) | fork creator |
+| `CHALLENGE` | `lock_bond("CHALLENGE")` → `challenge_verdict(bond_id, …)` | `CHALLENGE_BOND` (0.1 GEN) | challenger |
 
-Each payable method checks `gl.message.value == <exact bond>` up front
-(a wrong/zero/over amount reverts before any heavy work; a revert returns
-the value and writes nothing) and, only after every other validation
-passes, writes the `Bond` record via `_capture_bond` and indexes it in
-`bonds_by_target["<TARGET_KIND>/<id>"]`. `Fork.creator_bond_id` and
-`Challenge.bond_id` point back to the record.
+`Fork.creator_bond_id` and `Challenge.bond_id` point back to the record.
+An UNASSIGNED bond (`target_id == 0`) settles as a plain 100 % refund with
+no finalize check.
 
 ## 3. Disposition (deterministic, from the finalized verdict)
 
@@ -108,8 +131,9 @@ Admin-only (`treasury_addr`), not paused-gated. Moves up to
 
 ## 7. ABI / storage
 
-- `+withdraw_treasury` (write), `+list_bonds_by_target` (view) → ABI 34
-  (15 write + 17 view + 2 admin).
+- `+lock_bond` + `+withdraw_treasury` (write), `+list_bonds_by_target`
+  (view); the three formerly-payable methods gain a leading `bond_id` and
+  drop `.payable`. ABI 35 (16 write + 17 view + 2 admin).
 - `Bond` gains `challenge_id`, `refund_amount`, `slash_amount`,
   `reward_amount`. `Contract` gains `bonds_by_target` and `treasury_pool`.
   `ConstantsView` gains `challenger_flip_reward` and `treasury_pool`.

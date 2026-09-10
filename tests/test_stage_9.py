@@ -84,34 +84,63 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(b.purpose, gf.BOND_PURPOSE_FORK_CREATION)
         self.assertEqual(str(b.owner), CREATOR)
 
-    def test_wrong_bond_amount_rejected(self):
-        c, did, rid, case_id = h._fresh_root_case.__wrapped__ if False else (None,)*4  # noqa
-        # build a root ready for submit_root_envelope, then send a wrong bond
+    def _root_ready(self):
         c = h._fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *h._params_kv([("allocation", "1")]))
-        args = h._evidence_arrays(("https://x/1",))
-        shim.set_value(BOND - 1)
-        with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, *h._envelope_fields(), *args)
+        return c, rid
 
-    def test_zero_bond_rejected(self):
-        c = h._fresh()
-        did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *h._params_kv([("allocation", "1")]))
-        args = h._evidence_arrays(("https://x/1",))
+    def test_lock_bond_zero_rejected(self):
+        c, rid = self._root_ready()
         shim.set_value(0)
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, *h._envelope_fields(), *args)
+            c.lock_bond(gf.BOND_PURPOSE_ENVELOPE)
 
-    def test_overpay_rejected(self):
-        c = h._fresh()
-        did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *h._params_kv([("allocation", "1")]))
-        args = h._evidence_arrays(("https://x/1",))
-        shim.set_value(BOND * 2)
+    def test_lock_bond_bad_purpose_rejected(self):
+        c, rid = self._root_ready()
+        shim.set_value(BOND)
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, *h._envelope_fields(), *args)
+            c.lock_bond("NONSENSE")
+
+    def test_wrong_bond_amount_rejected_at_consume(self):
+        # lock_bond accepts any nonzero value; the exact-amount check is in
+        # the (safely-revertible) consuming method.
+        c, rid = self._root_ready()
+        bid = shim.lock(c, gf.BOND_PURPOSE_ENVELOPE, BOND - 1)
+        args = h._evidence_arrays(("https://x/1",))
+        with self.assertRaises(UserError):
+            c.submit_root_envelope(bid, rid, *h._envelope_fields(), *args)
+        # the mis-sized bond is fully refundable
+        b = c.get_bond(bid)
+        self.assertEqual(int(b.target_id), 0)
+        self.assertFalse(b.settled)
+        before = shim.balance(DEFAULT)
+        c.settle_bond(bid)
+        self.assertEqual(c.get_bond(bid).settlement_kind, gf.BOND_SETTLED_FULL_REFUND)
+        self.assertEqual(shim.balance(DEFAULT) - before, BOND - 1)
+
+    def test_overpay_rejected_at_consume(self):
+        c, rid = self._root_ready()
+        bid = shim.lock(c, gf.BOND_PURPOSE_ENVELOPE, BOND * 2)
+        args = h._evidence_arrays(("https://x/1",))
+        with self.assertRaises(UserError):
+            c.submit_root_envelope(bid, rid, *h._envelope_fields(), *args)
+
+    def test_wrong_purpose_bond_rejected(self):
+        c, rid = self._root_ready()
+        bid = shim.lock(c, gf.BOND_PURPOSE_FORK_CREATION, BOND)  # wrong purpose
+        args = h._evidence_arrays(("https://x/1",))
+        with self.assertRaises(UserError):
+            c.submit_root_envelope(bid, rid, *h._envelope_fields(), *args)
+
+    def test_bond_not_owned_by_caller_rejected(self):
+        c, rid = self._root_ready()
+        shim.set_sender("0x" + "bb" * 20)
+        bid = shim.lock(c, gf.BOND_PURPOSE_ENVELOPE, BOND)
+        shim.reset_message_context()   # back to default sender
+        args = h._evidence_arrays(("https://x/1",))
+        with self.assertRaises(UserError):
+            c.submit_root_envelope(bid, rid, *h._envelope_fields(), *args)
 
     def test_challenge_bond_captured(self):
         c, rid, case_id, eids = s8._root_with_verdict()

@@ -1843,9 +1843,10 @@ class Contract(gl.Contract):
         self.next_root_id = u256(int(root_id) + 1)
         return root_id
 
-    @gl.public.write.payable
+    @gl.public.write
     def submit_root_envelope(
         self,
+        bond_id: u256,
         root_id: u256,
         objective: str,
         beneficiary_class: str,
@@ -1897,14 +1898,10 @@ class Contract(gl.Contract):
         )
         if self.paused:
             raise gl.vm.UserError("paused")
-        # Stage 9: exact ENVELOPE_BOND must accompany the call (checked up
-        # front; the Bond record is written only after all checks pass).
-        if int(gl.message.value) != ENVELOPE_BOND:
-            raise gl.vm.UserError(
-                "exact ENVELOPE_BOND required (expected "
-                + str(int(ENVELOPE_BOND)) + ", got "
-                + str(int(gl.message.value)) + ")"
-            )
+        # Stage 9: consume a caller-owned, unassigned ENVELOPE bond of the
+        # exact amount (locked beforehand via lock_bond). Non-payable ->
+        # any revert below is safe (no value attached to this call).
+        self._consume_bond(bond_id, BOND_PURPOSE_ENVELOPE, ENVELOPE_BOND)
         if root_id not in self.roots:
             raise gl.vm.UserError("root not found")
         root = self.roots[root_id]
@@ -2085,16 +2082,15 @@ class Contract(gl.Contract):
             imported_at=root.imported_at,
             current_verdict_id=root.current_verdict_id,
         )
-        # Stage 9: capture the proposer's envelope bond (all checks passed).
-        self._capture_bond(
-            BOND_PURPOSE_ENVELOPE, TARGET_KIND_ROOT_ENVELOPE, root_id,
-            ENVELOPE_BOND, u256(0),
-        )
+        # Stage 9: bind the pre-locked envelope bond to this root (all
+        # checks passed).
+        self._assign_bond(bond_id, TARGET_KIND_ROOT_ENVELOPE, root_id, u256(0))
         return case_id
 
-    @gl.public.write.payable
+    @gl.public.write
     def create_fork(
         self,
+        bond_id: u256,
         parent_id: u256,
         parent_kind: str,
         parent_fingerprint: bytes,
@@ -2165,16 +2161,10 @@ class Contract(gl.Contract):
         )
         if self.paused:
             raise gl.vm.UserError("paused")
-        # Stage 9: exact FORK_CREATION_BOND must accompany the call. Checked
-        # up front so a wrong amount reverts before any heavy validation;
-        # the Bond record itself is written only after every check passes
-        # (a revert returns the value and writes nothing).
-        if int(gl.message.value) != FORK_CREATION_BOND:
-            raise gl.vm.UserError(
-                "exact FORK_CREATION_BOND required (expected "
-                + str(int(FORK_CREATION_BOND)) + ", got "
-                + str(int(gl.message.value)) + ")"
-            )
+        # Stage 9: consume a caller-owned, unassigned FORK_CREATION bond of
+        # the exact amount (locked beforehand via lock_bond). Non-payable ->
+        # any revert below is safe (no value attached to this call).
+        self._consume_bond(bond_id, BOND_PURPOSE_FORK_CREATION, FORK_CREATION_BOND)
         # Resolve parent + eligibility. The FAITHFUL gate is the FIRST
         # check on the parent's authority. There is no bypass.
         if parent_kind == PARENT_KIND_ROOT:
@@ -2273,11 +2263,9 @@ class Contract(gl.Contract):
         # Allocate + write
         fork_id = self.next_fork_id
         self.next_fork_id = u256(int(fork_id) + 1)
-        # All validation passed -- capture the creator bond now.
-        creator_bond_id = self._capture_bond(
-            BOND_PURPOSE_FORK_CREATION, TARGET_KIND_FORK, fork_id,
-            FORK_CREATION_BOND, u256(0),
-        )
+        # All validation passed -- bind the pre-locked creator bond.
+        self._assign_bond(bond_id, TARGET_KIND_FORK, fork_id, u256(0))
+        creator_bond_id = bond_id
         self.forks[fork_id] = Fork(
             parent_id=parent_id,
             parent_kind=parent_kind,
@@ -3428,9 +3416,10 @@ class Contract(gl.Contract):
                 open_count = open_count + 1
         return (total, open_count)
 
-    @gl.public.write.payable
+    @gl.public.write
     def challenge_verdict(
         self,
+        bond_id: u256,
         target_id: u256,
         target_kind: str,
         ground_code: str,
@@ -3438,13 +3427,10 @@ class Contract(gl.Contract):
     ) -> u256:
         if self.paused:
             raise gl.vm.UserError("paused")
-        # Stage 9: exact CHALLENGE_BOND must accompany the call.
-        if int(gl.message.value) != CHALLENGE_BOND:
-            raise gl.vm.UserError(
-                "exact CHALLENGE_BOND required (expected "
-                + str(int(CHALLENGE_BOND)) + ", got "
-                + str(int(gl.message.value)) + ")"
-            )
+        # Stage 9: consume a caller-owned, unassigned CHALLENGE bond of the
+        # exact amount (locked beforehand via lock_bond). Non-payable ->
+        # safe to revert below.
+        self._consume_bond(bond_id, BOND_PURPOSE_CHALLENGE, CHALLENGE_BOND)
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
             if target_id not in self.roots:
                 raise gl.vm.UserError("root not found")
@@ -3517,10 +3503,7 @@ class Contract(gl.Contract):
             verdict_id=u256(0),
             challenge_id=challenge_id,
         )
-        bond_id = self._capture_bond(
-            BOND_PURPOSE_CHALLENGE, target_kind, target_id,
-            CHALLENGE_BOND, challenge_id,
-        )
+        self._assign_bond(bond_id, target_kind, target_id, challenge_id)
         self.challenges[challenge_id] = Challenge(
             target_id=target_id,
             target_kind=target_kind,
@@ -3608,34 +3591,95 @@ class Contract(gl.Contract):
     # Stage 9: GEN bond economics
     #
     # Live-proven primitives only (contracts/probe/value_transfer_probe.py):
-    #   - @gl.public.write.payable + gl.message.value  -- capture
+    #   - @gl.public.write.payable + gl.message.value  -- capture (lock_bond)
     #   - self.balance                                 -- accounting
     #   - gl.get_contract_at(<Address>).emit_transfer(value=<u256>)  -- payout
     #
-    # The contract IS the treasury: slashed GEN stays in self.balance and is
-    # tracked by self.treasury_pool. Every bond's refund + slash == the
-    # locked amount exactly. A challenger-flip reward is an extra bonus
-    # drawn from treasury_pool (capped at the pool). bond.settled is set
-    # BEFORE any transfer -> replay-safe. settle_bond and withdraw_treasury
-    # are NOT paused-gated: pause blocks new exposure, never traps
-    # finalized funds. See docs/STAGE_9_GEN_BOND_ECONOMICS.md.
+    # CAPTURE MODEL (corrected after a live StudioNet finding): on the pinned
+    # runtime a payable call that REVERTS keeps the attached native value in
+    # the contract while rolling back all state -- the value is trapped with
+    # no record. So capture is split from the gated action:
+    #
+    #   1. lock_bond(purpose)  -- the ONLY payable method. It records a Bond
+    #      for whatever value was sent and CANNOT revert once value is
+    #      attached (it only rejects value == 0, which traps nothing).
+    #      Returns bond_id. The bond starts UNASSIGNED (target_id == 0).
+    #   2. create_fork / submit_root_envelope / challenge_verdict  -- now
+    #      NON-payable. They CONSUME a caller-owned UNASSIGNED bond of the
+    #      right purpose and exact amount, and may revert freely (no value
+    #      is attached to these calls, so nothing is trapped). A wrong /
+    #      unused / rejected bond is always 100%-refundable via settle_bond.
+    #
+    # The contract IS the treasury: slashed GEN stays in self.balance,
+    # tracked by self.treasury_pool. refund + slash == amount for every
+    # bond. A challenger-flip reward is drawn from treasury_pool (capped).
+    # bond.settled is set BEFORE any transfer -> replay-safe. settle_bond
+    # and withdraw_treasury are NOT paused-gated: pause blocks new exposure,
+    # never traps funds. See docs/STAGE_9_GEN_BOND_ECONOMICS.md.
     # ---------------------------------------------------------------------
 
-    def _capture_bond(self, purpose, target_kind, target_id, expected, challenge_id):
+    @gl.public.write.payable
+    def lock_bond(self, purpose: str) -> u256:
+        # The single payable entry point. Records the incoming value as a
+        # Bond and returns its id. Cannot revert once value is attached:
+        # a bad `purpose` or a zero value is the only rejection and neither
+        # traps GEN. The exact-amount / target-eligibility checks happen in
+        # the (non-payable, safely revertible) consuming method.
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if (purpose != BOND_PURPOSE_FORK_CREATION
+                and purpose != BOND_PURPOSE_ENVELOPE
+                and purpose != BOND_PURPOSE_CHALLENGE):
+            raise gl.vm.UserError("unknown bond purpose")
         v = gl.message.value
-        if int(v) != int(expected):
-            raise gl.vm.UserError(
-                "exact bond required for " + purpose + " (expected "
-                + str(int(expected)) + ", got " + str(int(v)) + ")"
-            )
+        if int(v) == 0:
+            raise gl.vm.UserError("bond value required")
         bond_id = self.next_bond_id
         self.next_bond_id = u256(int(bond_id) + 1)
         self.bonds[bond_id] = Bond(
             owner=gl.message.sender_address,
             amount=u256(int(v)),
+            target_id=u256(0),
+            target_kind="",
+            purpose=purpose,
+            settlement_kind=BOND_UNSETTLED,
+            settled=False,
+            settled_at=u256(0),
+            challenge_id=u256(0),
+            refund_amount=u256(0),
+            slash_amount=u256(0),
+            reward_amount=u256(0),
+        )
+        return bond_id
+
+    def _consume_bond(self, bond_id, purpose, expected_amount):
+        # Non-payable path: safe to revert. Returns the Bond, unmodified.
+        if bond_id not in self.bonds:
+            raise gl.vm.UserError("bond not found")
+        b = self.bonds[bond_id]
+        if b.owner != gl.message.sender_address:
+            raise gl.vm.UserError("bond not owned by caller")
+        if b.purpose != purpose:
+            raise gl.vm.UserError("bond purpose mismatch")
+        if b.settled:
+            raise gl.vm.UserError("bond already settled")
+        if int(b.target_id) != 0:
+            raise gl.vm.UserError("bond already consumed")
+        if int(b.amount) != int(expected_amount):
+            raise gl.vm.UserError(
+                "wrong bond amount (expected " + str(int(expected_amount))
+                + ", locked " + str(int(b.amount)) + ") -- settle it for a refund"
+            )
+        return b
+
+    def _assign_bond(self, bond_id, target_kind, target_id, challenge_id):
+        b = self.bonds[bond_id]
+        self.bonds[bond_id] = Bond(
+            owner=b.owner,
+            amount=b.amount,
             target_id=target_id,
             target_kind=target_kind,
-            purpose=purpose,
+            purpose=b.purpose,
             settlement_kind=BOND_UNSETTLED,
             settled=False,
             settled_at=u256(0),
@@ -3648,7 +3692,6 @@ class Contract(gl.Contract):
         if key not in self.bonds_by_target:
             self.bonds_by_target[key] = []
         self.bonds_by_target[key].append(bond_id)
-        return bond_id
 
     def _write_bond_settled(self, bond_id, bond, kind, refund, slash, reward):
         self.bonds[bond_id] = Bond(
@@ -3708,12 +3751,20 @@ class Contract(gl.Contract):
         bond = self.bonds[bond_id]
         if bond.settled:
             raise gl.vm.UserError("bond already settled")
-        final_verdict = self._target_final_verdict_str(bond)
 
         amt = int(bond.amount)
         refund = 0
         slash = 0
         reward = 0
+
+        # An UNASSIGNED bond (never consumed by a target -- wrong amount,
+        # rejected submission, or simply unused) is always a 100% refund.
+        if int(bond.target_id) == 0:
+            self._write_bond_settled(bond_id, bond, BOND_SETTLED_FULL_REFUND, amt, 0, 0)
+            gl.get_contract_at(bond.owner).emit_transfer(value=u256(amt))
+            return
+
+        final_verdict = self._target_final_verdict_str(bond)
 
         if bond.purpose == BOND_PURPOSE_CHALLENGE:
             ch_id = bond.challenge_id

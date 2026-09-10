@@ -208,10 +208,6 @@ class _MockChain:
 
 
 _CHAIN = _MockChain()
-
-# method name -> native value auto-attached to a payable call when the test
-# has not explicitly set gl.message.value. Populated by autopay_bonds().
-_AUTOPAY = {}
 _MSG_STATE = {"explicit": False}
 
 
@@ -246,19 +242,12 @@ class _PublicNamespace:
         def payable(fn):
             def _wrapped(self, *a, **kw):
                 gl = sys.modules["genlayer"].gl
-                prev_value = gl.message.value
-                auto = _AUTOPAY.get(fn.__name__)
-                if auto is not None and not _MSG_STATE["explicit"]:
-                    gl.message.value = u256(int(auto))
                 # A payable call moves value from the sender to the contract.
                 _CHAIN.deposit_from(
                     gl.message.sender_address, _CHAIN.current_contract,
                     int(gl.message.value),
                 )
-                try:
-                    return fn(self, *a, **kw)
-                finally:
-                    gl.message.value = prev_value
+                return fn(self, *a, **kw)
 
             _wrapped.__name__ = getattr(fn, "__name__", "payable_method")
             return _wrapped
@@ -515,25 +504,59 @@ def set_sender(addr: str):
 # --- Stage 9: native-GEN test helpers (LOCAL LOGIC TESTS only) -----------
 
 def set_value(v):
-    """Explicitly set gl.message.value for the next payable call(s). Setting
-    it (even to 0) disables autopay until reset_message_context()."""
+    """Explicitly set gl.message.value for the next lock_bond call."""
     gl = sys.modules["genlayer"].gl
     gl.message.value = u256(int(v))
     _MSG_STATE["explicit"] = True
 
 
+def lock(contract, purpose, amount):
+    """Lock a bond of `amount` GEN for `purpose` and return its id.
+    LOCAL LOGIC TEST helper. Mirrors the real lock_bond -> consume flow."""
+    gl = sys.modules["genlayer"].gl
+    prev = gl.message.value
+    gl.message.value = u256(int(amount))
+    try:
+        return contract.lock_bond(purpose)
+    finally:
+        gl.message.value = prev
+
+
+_AUTOPAY_SPECS = None
+
+
 def autopay_bonds(gf_module):
-    """Register the exact bond each payable method expects so existing test
-    call sites (which pass no value) keep working. Wrong-bond / zero-bond
-    tests call set_value(...) explicitly to override."""
-    _AUTOPAY.clear()
-    _AUTOPAY["submit_root_envelope"] = int(gf_module.ENVELOPE_BOND)
-    _AUTOPAY["create_fork"] = int(gf_module.FORK_CREATION_BOND)
-    _AUTOPAY["challenge_verdict"] = int(gf_module.CHALLENGE_BOND)
+    """Monkeypatch create_fork / submit_root_envelope / challenge_verdict so
+    that a call made with the PRE-Stage-9 argument count auto-locks the
+    right bond and prepends its id. Tests that exercise bond behaviour
+    pass an explicit bond_id (one extra leading arg) and bypass this.
+    Idempotent."""
+    global _AUTOPAY_SPECS
+    C = gf_module.Contract
+    specs = [
+        ("create_fork", 12, gf_module.BOND_PURPOSE_FORK_CREATION, int(gf_module.FORK_CREATION_BOND)),
+        ("submit_root_envelope", 14, gf_module.BOND_PURPOSE_ENVELOPE, int(gf_module.ENVELOPE_BOND)),
+        ("challenge_verdict", 4, gf_module.BOND_PURPOSE_CHALLENGE, int(gf_module.CHALLENGE_BOND)),
+    ]
+    _AUTOPAY_SPECS = specs
 
+    def make(name, oldn, purpose, amount):
+        orig = getattr(C, "_gforig_" + name, None)
+        if orig is None:
+            orig = getattr(C, name)
+            setattr(C, "_gforig_" + name, orig)
 
-def clear_autopay():
-    _AUTOPAY.clear()
+        def wrapped(self, *a, **kw):
+            if len(a) == oldn and "bond_id" not in kw:
+                bid = lock(self, purpose, amount)
+                return orig(self, bid, *a, **kw)
+            return orig(self, *a, **kw)
+
+        wrapped.__name__ = name
+        return wrapped
+
+    for name, oldn, purpose, amount in specs:
+        setattr(C, name, make(name, oldn, purpose, amount))
 
 
 def fund(addr, amount):
