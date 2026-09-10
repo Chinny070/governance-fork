@@ -63,6 +63,7 @@ export function BuildFlow() {
   const [mutable, setMutable] = useState<string[]>([]);
   const [immutable, setImmutable] = useState<string[]>([]);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([emptyEvidenceRow()]);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const prefillDemo = () => {
     const d = DEMO_PROPOSAL;
@@ -130,8 +131,39 @@ export function BuildFlow() {
     }
   };
 
+  // Contract string limits (contracts/governance_fork.py). Checked client-side
+  // so a too-long field fails here instead of wasting a locked bond on a revert.
+  const LIMITS = {
+    objective: 512,
+    beneficiary: 128,
+    scope: 256,
+    essential: 128,
+    dimension: 64,
+  };
+  const lengthProblem = (): string | null => {
+    if (objective.trim().length > LIMITS.objective)
+      return `Objective is too long (max ${LIMITS.objective}).`;
+    if (beneficiary.trim().length > LIMITS.beneficiary)
+      return `Beneficiary class is too long (max ${LIMITS.beneficiary}).`;
+    if (scope.trim().length > LIMITS.scope)
+      return `Scope is too long (max ${LIMITS.scope}).`;
+    for (const c of essential)
+      if (c.trim().length > LIMITS.essential)
+        return `Essential constraint "${c.slice(0, 30)}…" is too long (max ${LIMITS.essential}).`;
+    for (const d of [...mutable, ...immutable])
+      if (d.trim().length > LIMITS.dimension)
+        return `Dimension "${d.slice(0, 30)}…" is too long (max ${LIMITS.dimension} chars).`;
+    return null;
+  };
+
   const doEnvelope = async () => {
     if (!rootId) return;
+    const problem = lengthProblem();
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    setFormError(null);
     const ev = evidenceRowsToArrays(evidence);
     const w = await tx.run(async () => {
       const c = g();
@@ -384,6 +416,8 @@ export function BuildFlow() {
               <code>lock_bond("ENVELOPE")</code> then{" "}
               <code>submit_root_envelope(bond_id, …)</code>.
             </Notice>
+
+            {formError && <Notice tone="bad">{formError}</Notice>}
           </div>
 
           <div className="row" style={{ marginTop: 12 }}>

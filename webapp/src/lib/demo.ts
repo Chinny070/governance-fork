@@ -40,7 +40,7 @@ export const DEMO_PROPOSAL = {
     ],
     immutableDimensions: [
       "token-holder ultimate authority",
-      "separation of Security Council emergency powers from routine governance",
+      "Security Council emergency powers stay separate",
     ],
   },
   evidence: [
