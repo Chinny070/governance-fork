@@ -202,6 +202,7 @@ class CloseEvidenceTests(unittest.TestCase):
             evidence_set_fingerprint=b"", adjudication_dimensions_version=shim.u32(1),
             case_fingerprint=b"", state=gf.CASE_OPEN, retry_count=shim.u32(0),
             last_attempt_at=shim.u256(0), verdict_id=shim.u256(0),
+            challenge_id=shim.u256(0),
         )
         with self.assertRaises(UserError):
             c.close_evidence(case_id)
@@ -1376,14 +1377,13 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.adjudicate(shim.u256(1))
 
-    def test_no_finalization_or_verdict_logic_present(self):
+    def test_bond_settlement_still_unimplemented(self):
         import pathlib
         src = (pathlib.Path(_ROOT) / "contracts" / "governance_fork.py").read_text()
-        # finalize() and challenge_verdict()/settle_bond() must still raise
-        # their Stage-2 placeholder, i.e. no Stage 6b business logic crept
-        # into them.
+        # Stage 8 implements finalize() and challenge_verdict(); GEN bond
+        # economics (settle_bond) remain a later-stage placeholder.
         self.assertIn(
-            'def finalize(self, target_id: u256, target_kind: str) -> None:\n'
+            'def settle_bond(self, bond_id: u256) -> None:\n'
             '        raise gl.vm.UserError("stage-2: not implemented")',
             src,
         )
