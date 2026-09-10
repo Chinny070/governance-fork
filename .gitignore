@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Stale, filesystem-locked scaffold left by an interrupted install.
+# The production frontend lives in webapp/.
+/frontend/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.local
+.DS_Store
