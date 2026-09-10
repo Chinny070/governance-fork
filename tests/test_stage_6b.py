@@ -64,6 +64,52 @@ def _body(title="Fork A", params=(("allocation", "50000"), ("duration", "6 month
     )
 
 
+def _params_kv(pairs):
+    """ABI-compatibility replacement for _params(): returns the parallel
+    (keys, values) arrays import_root_proposal now takes directly.
+    """
+    return (
+        shim.DynArray([k for k, v in pairs]),
+        shim.DynArray([v for k, v in pairs]),
+    )
+
+
+def _delta_fields(entries):
+    """ABI-compatibility replacement for _delta(): returns the four
+    parallel arrays create_fork now takes directly, instead of a single
+    DynArray[DeltaEntry].
+    """
+    return (
+        shim.DynArray([n for (n, ck, pv, fv) in entries]),
+        shim.DynArray([pv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([fv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([ck for (n, ck, pv, fv) in entries]),
+    )
+
+
+def _envelope_fields(mutable=("allocation", "duration"), immutable=("beneficiary_class",)):
+    """ABI-compatibility replacement for _envelope(): returns the flattened
+    positional arguments submit_root_envelope now takes directly.
+    """
+    return (
+        "Fund ecosystem developer work.",
+        "Developers",
+        gf.RESOURCE_TREASURY,
+        "ecosystem-wide",
+        shim.DynArray(["must be for developer work"]),
+        shim.DynArray(list(mutable)),
+        shim.DynArray(list(immutable)),
+    )
+
+
+def _body_fields(title="Fork A", params=(("allocation", "50000"), ("duration", "6 months"))):
+    """ABI-compatibility replacement for _body(): returns the flattened
+    positional arguments create_fork now takes directly for the body.
+    """
+    keys, values = _params_kv(params)
+    return (title, "", keys, values, "")
+
+
 def _evidence_arrays(urls, classes=None, rel=None, auth=None, tm=None, profiles=None):
     n = len(urls)
     if classes is None:
@@ -100,10 +146,10 @@ def _fresh_root_case(urls=("https://x/1",), profiles=None, mutable=("allocation"
     c = _fresh()
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
-        did, "EP", "T", "https://x/1", _params([("allocation", "100000")]),
+        did, "EP", "T", "https://x/1", *_params_kv([("allocation", "100000")]),
     )
     args = _evidence_arrays(urls, profiles=profiles)
-    case_id = c.submit_root_envelope(rid, _envelope(mutable=mutable, immutable=immutable), *args)
+    case_id = c.submit_root_envelope(rid, *_envelope_fields(mutable=mutable, immutable=immutable), *args)
     return c, did, rid, case_id
 
 
@@ -115,10 +161,10 @@ def _fresh_fork_case(urls=("https://a.example.com/1",), profiles=None):
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
         did, "EP", "T", "https://x/1",
-        _params([("allocation", "100000"), ("duration", "6 months")]),
+        *_params_kv([("allocation", "100000"), ("duration", "6 months")]),
     )
     args = _evidence_arrays(("https://gov.example.com/root-evidence",))
-    c.submit_root_envelope(rid, _envelope(), *args)
+    c.submit_root_envelope(rid, *_envelope_fields(), *args)
     r = c.get_root_proposal(rid)
     r.envelope_status = gf.ENVELOPE_FAITHFUL  # test-harness flip only
     c.roots[rid] = r
@@ -126,8 +172,8 @@ def _fresh_fork_case(urls=("https://a.example.com/1",), profiles=None):
     shim.set_sender(creator)
     fid = c.create_fork(
         rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-        _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-        _body(),
+        *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+        *_body_fields(),
     )
     fork_args = _evidence_arrays(urls, profiles=profiles)
     case_id = c.submit_fork_evidence(fid, *fork_args)
@@ -146,7 +192,7 @@ class CloseEvidenceTests(unittest.TestCase):
         # exercised via a case manufactured with empty membership.
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         case_id = c.next_case_id
         c.cases[case_id] = gf.Case(
             case_type=gf.CASE_TYPE_ROOT_ENVELOPE, target_id=rid,
@@ -328,9 +374,9 @@ class FetchEvidenceTests(unittest.TestCase):
     def test_fetch_evidence_from_another_case_cannot_contaminate(self):
         c, did, rid, case_id_a = _fresh_root_case(urls=("https://x/1",))
         did2 = c.register_dao("B", "https://b")
-        rid2 = c.import_root_proposal(did2, "EP2", "T2", "https://y/1", _params([]))
+        rid2 = c.import_root_proposal(did2, "EP2", "T2", "https://y/1", *_params_kv([]))
         args = _evidence_arrays(("https://y/1",))
-        case_id_b = c.submit_root_envelope(rid2, _envelope(), *args)
+        case_id_b = c.submit_root_envelope(rid2, *_envelope_fields(), *args)
         c.close_evidence(case_id_a)
         c.close_evidence(case_id_b)
         eid_a = list(c.evidence_by_case[case_id_a])[0]
@@ -713,9 +759,9 @@ class AbortCaseTests(unittest.TestCase):
         c.close_evidence(case_id_a)
         c.abort_case(case_id_a)
         did2 = c.register_dao("B", "https://b")
-        rid2 = c.import_root_proposal(did2, "EP2", "T2", "https://y/1", _params([]))
+        rid2 = c.import_root_proposal(did2, "EP2", "T2", "https://y/1", *_params_kv([]))
         args = _evidence_arrays(("https://y/1",))
-        case_id_b = c.submit_root_envelope(rid2, _envelope(), *args)
+        case_id_b = c.submit_root_envelope(rid2, *_envelope_fields(), *args)
         self.assertNotEqual(int(case_id_a), int(case_id_b))
         self.assertGreater(int(case_id_b), int(case_id_a))
 
@@ -994,10 +1040,10 @@ class RenderProfileTests(unittest.TestCase):
     def test_invalid_profile_rejected(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         args = _evidence_arrays(("https://x/1",), profiles=("BOGUS_PROFILE",))
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), *args)
+            c.submit_root_envelope(rid, *_envelope_fields(), *args)
 
     def test_no_arbitrary_wait_or_html_surface(self):
         # Structural: only two profile string constants exist; nothing in
@@ -1115,10 +1161,10 @@ class FingerprintTests(unittest.TestCase):
         c2 = _fresh()
         did2 = c2.register_dao("B", "https://b")
         rid2 = c2.import_root_proposal(
-            did2, "EP-DIFFERENT", "T", "https://x/1", _params([("allocation", "100000")]),
+            did2, "EP-DIFFERENT", "T", "https://x/1", *_params_kv([("allocation", "100000")]),
         )
         args = _evidence_arrays(("https://x/1",))
-        case_id2 = c2.submit_root_envelope(rid2, _envelope(), *args)
+        case_id2 = c2.submit_root_envelope(rid2, *_envelope_fields(), *args)
         c2.close_evidence(case_id2)
         eid2 = list(c2.evidence_by_case[case_id2])[0]
         shim.get_mock_web().set_response("https://x/1", "identical evidence content for check")
@@ -1183,12 +1229,12 @@ class RootForkParityTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(
-            did, "EP", "T", "https://canonical.example.com/prop", _params([]),
+            did, "EP", "T", "https://canonical.example.com/prop", *_params_kv([]),
         )
         args = _evidence_arrays(
             ("https://canonical.example.com/prop", "https://other.example.com/x"),
         )
-        case_id = c.submit_root_envelope(rid, _envelope(), *args)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), *args)
         c.close_evidence(case_id)
         eids = list(c.evidence_by_case[case_id])
         mock = shim.get_mock_web()
@@ -1212,10 +1258,10 @@ class RootForkParityTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(
-            did, "EP", "T", "https://canonical.example.com/prop", _params([]),
+            did, "EP", "T", "https://canonical.example.com/prop", *_params_kv([]),
         )
         args = _evidence_arrays(("https://unrelated.example.com/x",))
-        case_id = c.submit_root_envelope(rid, _envelope(), *args)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), *args)
         c.close_evidence(case_id)
         eid = list(c.evidence_by_case[case_id])[0]
         shim.get_mock_web().set_response(
@@ -1236,10 +1282,10 @@ class RootForkParityTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(
-            did, "EP", "T", "https://canonical.example.com/prop", _params([]),
+            did, "EP", "T", "https://canonical.example.com/prop", *_params_kv([]),
         )
         args = _evidence_arrays(("https://canonical.example.com/prop",))
-        case_id = c.submit_root_envelope(rid, _envelope(), *args)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), *args)
         c.close_evidence(case_id)
         eid = list(c.evidence_by_case[case_id])[0]
         shim.get_mock_web().set_response("https://canonical.example.com/prop", "")  # unusable
@@ -1260,10 +1306,10 @@ class RootForkParityTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(
-            did, "EP", "T", "https://canonical.example.com/prop", _params([]),
+            did, "EP", "T", "https://canonical.example.com/prop", *_params_kv([]),
         )
         args = _evidence_arrays(("https://canonical.example.com/prop",))
-        case_id = c.submit_root_envelope(rid, _envelope(), *args)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), *args)
         c.close_evidence(case_id)
         eid = list(c.evidence_by_case[case_id])[0]
         call_count = {"n": 0}

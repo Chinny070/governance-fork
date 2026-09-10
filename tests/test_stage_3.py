@@ -47,6 +47,42 @@ def _envelope(
     )
 
 
+def _envelope_fields(
+    objective="Fund ecosystem developer work.",
+    beneficiary_class="Developers",
+    resource_type=gf.RESOURCE_TREASURY,
+    scope="ecosystem-wide",
+    essential=("must be for developer work",),
+    mutable=("allocation", "duration"),
+    immutable=("beneficiary_class",),
+):
+    """ABI-compatibility replacement for _envelope(): returns the flattened
+    positional arguments submit_root_envelope now takes directly, instead
+    of a single IntentEnvelope object. See the "ABI compatibility
+    correction" comment on submit_root_envelope in governance_fork.py.
+    """
+    return (
+        objective,
+        beneficiary_class,
+        resource_type,
+        scope,
+        shim.DynArray(essential),
+        shim.DynArray(mutable),
+        shim.DynArray(immutable),
+    )
+
+
+def _params_kv(pairs):
+    """ABI-compatibility replacement for _params(): returns the parallel
+    (keys, values) arrays import_root_proposal now takes directly, instead
+    of a single DynArray[ParamKV].
+    """
+    return (
+        shim.DynArray([k for k, v in pairs]),
+        shim.DynArray([v for k, v in pairs]),
+    )
+
+
 def _evidence_bundle(urls=("https://gov.example.com/prop/1",),
                      classes=None,
                      rel=None,
@@ -150,7 +186,7 @@ class RootImportTests(unittest.TestCase):
             "UP-91",
             "Developer Grants",
             "https://gov.uniswap.org/proposals/91",
-            _params([("amount", "100000"), ("duration", "6 months")]),
+            *_params_kv([("amount", "100000"), ("duration", "6 months")]),
         )
         r = c.get_root_proposal(rid)
         self.assertEqual(r.envelope_status, gf.ENVELOPE_NOT_SUBMITTED)
@@ -167,14 +203,14 @@ class RootImportTests(unittest.TestCase):
                 "X",
                 "T",
                 "https://x",
-                _params([]),
+                *_params_kv([]),
             )
 
     def test_fingerprint_stable_across_calls_on_identical_inputs(self):
         c, did = self._prep()
         rid = c.import_root_proposal(
             did, "UP-91", "T", "https://x/1",
-            _params([("a", "1"), ("b", "2")]),
+            *_params_kv([("a", "1"), ("b", "2")]),
         )
         fp = c.get_root_proposal(rid).import_fingerprint
         # Recompute canonical form independently and confirm SHA-256 match.
@@ -199,11 +235,11 @@ class RootImportTests(unittest.TestCase):
         d2 = c.register_dao("B", "https://b")
         r1 = c.import_root_proposal(
             d1, "EP", "T", "https://x/1",
-            _params([("amount", "1"), ("duration", "6"), ("eligibility", "open")]),
+            *_params_kv([("amount", "1"), ("duration", "6"), ("eligibility", "open")]),
         )
         r2 = c.import_root_proposal(
             d2, "EP", "T", "https://x/1",
-            _params([("eligibility", "open"), ("amount", "1"), ("duration", "6")]),
+            *_params_kv([("eligibility", "open"), ("amount", "1"), ("duration", "6")]),
         )
         fp1 = c.get_root_proposal(r1).import_fingerprint
         fp2 = c.get_root_proposal(r2).import_fingerprint
@@ -232,8 +268,8 @@ class RootImportTests(unittest.TestCase):
         c = _fresh()
         d1 = c.register_dao("A", "https://a")
         d2 = c.register_dao("B", "https://b")
-        r1 = c.import_root_proposal(d1, "EP", "T", "https://x/1", _params([("a", "1")]))
-        r2 = c.import_root_proposal(d2, "EP", "T", "https://x/1", _params([("a", "2")]))
+        r1 = c.import_root_proposal(d1, "EP", "T", "https://x/1", *_params_kv([("a", "1")]))
+        r2 = c.import_root_proposal(d2, "EP", "T", "https://x/1", *_params_kv([("a", "2")]))
         self.assertNotEqual(
             c.get_root_proposal(r1).import_fingerprint,
             c.get_root_proposal(r2).import_fingerprint,
@@ -243,8 +279,8 @@ class RootImportTests(unittest.TestCase):
         c = _fresh()
         d1 = c.register_dao("A", "https://a")
         d2 = c.register_dao("B", "https://b")
-        r1 = c.import_root_proposal(d1, "EP", "T1", "https://x/1", _params([]))
-        r2 = c.import_root_proposal(d2, "EP", "T2", "https://x/1", _params([]))
+        r1 = c.import_root_proposal(d1, "EP", "T1", "https://x/1", *_params_kv([]))
+        r2 = c.import_root_proposal(d2, "EP", "T2", "https://x/1", *_params_kv([]))
         self.assertNotEqual(
             c.get_root_proposal(r1).import_fingerprint,
             c.get_root_proposal(r2).import_fingerprint,
@@ -254,8 +290,8 @@ class RootImportTests(unittest.TestCase):
         c = _fresh()
         d1 = c.register_dao("A", "https://a")
         d2 = c.register_dao("B", "https://b")
-        r1 = c.import_root_proposal(d1, "EP", "T", "https://x/1", _params([]))
-        r2 = c.import_root_proposal(d2, "EP", "T", "https://x/2", _params([]))
+        r1 = c.import_root_proposal(d1, "EP", "T", "https://x/1", *_params_kv([]))
+        r2 = c.import_root_proposal(d2, "EP", "T", "https://x/2", *_params_kv([]))
         self.assertNotEqual(
             c.get_root_proposal(r1).import_fingerprint,
             c.get_root_proposal(r2).import_fingerprint,
@@ -264,15 +300,15 @@ class RootImportTests(unittest.TestCase):
     def test_exact_duplicate_rejected(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        c.import_root_proposal(did, "EP", "T", "https://x/1", _params([("a", "1")]))
+        c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([("a", "1")]))
         with self.assertRaises(UserError):
-            c.import_root_proposal(did, "EP", "T", "https://x/1", _params([("a", "1")]))
+            c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([("a", "1")]))
 
     def test_similar_title_different_external_id_allowed(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        r1 = c.import_root_proposal(did, "EP-1", "Developer Grants", "https://x/1", _params([]))
-        r2 = c.import_root_proposal(did, "EP-2", "Developer Grants", "https://x/2", _params([]))
+        r1 = c.import_root_proposal(did, "EP-1", "Developer Grants", "https://x/1", *_params_kv([]))
+        r2 = c.import_root_proposal(did, "EP-2", "Developer Grants", "https://x/2", *_params_kv([]))
         self.assertNotEqual(int(r1), int(r2))
 
     def test_duplicate_parameter_keys_rejected(self):
@@ -281,7 +317,7 @@ class RootImportTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.import_root_proposal(
                 did, "EP", "T", "https://x/1",
-                _params([("k", "1"), ("k", "2")]),
+                *_params_kv([("k", "1"), ("k", "2")]),
             )
 
     def test_parameter_key_length_bounds(self):
@@ -290,26 +326,26 @@ class RootImportTests(unittest.TestCase):
         big_key = "k" * (gf.MAX_KV_KEY_LEN + 1)
         with self.assertRaises(UserError):
             c.import_root_proposal(did, "EP", "T", "https://x/1",
-                                   _params([(big_key, "1")]))
+                                   *_params_kv([(big_key, "1")]))
 
     def test_newline_in_title_rejected(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         with self.assertRaises(UserError):
-            c.import_root_proposal(did, "EP", "hello\nworld", "https://x/1", _params([]))
+            c.import_root_proposal(did, "EP", "hello\nworld", "https://x/1", *_params_kv([]))
 
     def test_url_length_bound(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         long_url = "https://x/" + "y" * gf.MAX_URL_LEN
         with self.assertRaises(UserError):
-            c.import_root_proposal(did, "EP", "T", long_url, _params([]))
+            c.import_root_proposal(did, "EP", "T", long_url, *_params_kv([]))
 
     def test_index_updated_on_import(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        r1 = c.import_root_proposal(did, "EP-1", "T", "https://x/1", _params([]))
-        r2 = c.import_root_proposal(did, "EP-2", "T", "https://x/2", _params([]))
+        r1 = c.import_root_proposal(did, "EP-1", "T", "https://x/1", *_params_kv([]))
+        r2 = c.import_root_proposal(did, "EP-2", "T", "https://x/2", *_params_kv([]))
         page = c.list_root_proposals_by_dao(did, shim.u256(0), shim.u32(50))
         got = [int(x) for x in page.items]
         self.assertEqual(got, [int(r1), int(r2)])
@@ -323,7 +359,7 @@ class RootImportTests(unittest.TestCase):
         if did in c.roots_by_dao:
             prior_dao_root_list_len = len(c.roots_by_dao[did])
         with self.assertRaises(UserError):
-            c.import_root_proposal(did, "", "T", "https://x/1", _params([]))
+            c.import_root_proposal(did, "", "T", "https://x/1", *_params_kv([]))
         self.assertEqual(int(c.next_root_id), prior_root_id)
         cur_len = 0
         if did in c.roots_by_dao:
@@ -335,14 +371,14 @@ class IntentEnvelopeTests(unittest.TestCase):
     def _prep(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         return c, did, rid
 
     def test_successful_submission_transitions_status(self):
         c, did, rid = self._prep()
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
         case_id = c.submit_root_envelope(
-            rid, _envelope(), urls, cls, rel, auth, tm, rp
+            rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp
         )
         r = c.get_root_proposal(rid)
         self.assertEqual(r.envelope_status, gf.ENVELOPE_EVIDENCE_OPEN)
@@ -354,7 +390,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         c = _fresh()
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
-            c.submit_root_envelope(shim.u256(99), _envelope(), urls, cls, rel, auth, tm, rp)
+            c.submit_root_envelope(shim.u256(99), *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
     def test_objective_bound_enforced(self):
         c, did, rid = self._prep()
@@ -362,7 +398,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         long_obj = "x" * (gf.MAX_OBJECTIVE_LEN + 1)
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(objective=long_obj), urls, cls, rel, auth, tm, rp
+                rid, *_envelope_fields(objective=long_obj), urls, cls, rel, auth, tm, rp
             )
 
     def test_empty_objective_rejected(self):
@@ -370,7 +406,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(objective=""), urls, cls, rel, auth, tm, rp
+                rid, *_envelope_fields(objective=""), urls, cls, rel, auth, tm, rp
             )
 
     def test_bad_resource_type_rejected(self):
@@ -378,7 +414,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(resource_type="INVALID"), urls, cls, rel, auth, tm, rp
+                rid, *_envelope_fields(resource_type="INVALID"), urls, cls, rel, auth, tm, rp
             )
 
     def test_essential_constraint_cap(self):
@@ -387,7 +423,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         big = tuple(f"c{i}" for i in range(gf.MAX_ESSENTIAL_CONSTRAINT_ITEMS + 1))
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(essential=big), urls, cls, rel, auth, tm, rp
+                rid, *_envelope_fields(essential=big), urls, cls, rel, auth, tm, rp
             )
 
     def test_mutable_immutable_overlap_rejected(self):
@@ -396,7 +432,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
-                _envelope(mutable=("allocation",), immutable=("allocation",)),
+                *_envelope_fields(mutable=("allocation",), immutable=("allocation",)),
                 urls, cls, rel, auth, tm, rp,
             )
 
@@ -406,7 +442,7 @@ class IntentEnvelopeTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
-                _envelope(mutable=("allocation", "allocation")),
+                *_envelope_fields(mutable=("allocation", "allocation")),
                 urls, cls, rel, auth, tm, rp,
             )
 
@@ -416,26 +452,26 @@ class IntentEnvelopeTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.submit_root_envelope(
                 rid,
-                _envelope(immutable=("beneficiary_class", "beneficiary_class")),
+                *_envelope_fields(immutable=("beneficiary_class", "beneficiary_class")),
                 urls, cls, rel, auth, tm, rp,
             )
 
     def test_second_active_envelope_rejected(self):
         c, did, rid = self._prep()
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
-        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+        c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
         urls2, cls2, rel2, auth2, tm2, rp2 = _evidence_bundle(
             urls=("https://gov.example.com/prop/1?v=2",),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls2, cls2, rel2, auth2, tm2, rp2)
+            c.submit_root_envelope(rid, *_envelope_fields(), urls2, cls2, rel2, auth2, tm2, rp2)
 
     def test_empty_essential_constraint_rejected(self):
         c, did, rid = self._prep()
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(essential=("",)), urls, cls, rel, auth, tm, rp
+                rid, *_envelope_fields(essential=("",)), urls, cls, rel, auth, tm, rp
             )
 
 
@@ -443,7 +479,7 @@ class EvidenceMetadataTests(unittest.TestCase):
     def _prep(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         return c, rid
 
     def test_successful_metadata_stored_frozen_false(self):
@@ -455,7 +491,7 @@ class EvidenceMetadataTests(unittest.TestCase):
             ),
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_GOVERNANCE_DISCUSSION),
         )
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
         page = c.list_evidence_of_case(case_id, shim.u256(0), shim.u32(50))
         ids = [int(x) for x in page.items]
         self.assertEqual(len(ids), 2)
@@ -472,14 +508,14 @@ class EvidenceMetadataTests(unittest.TestCase):
             urls=tuple(f"https://ex.com/{i}" for i in range(n)),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+            c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
     def test_at_least_one_evidence_required(self):
         c, rid = self._prep()
         empty = shim.DynArray([])
         with self.assertRaises(UserError):
             c.submit_root_envelope(
-                rid, _envelope(), empty, empty, empty, empty, empty, empty
+                rid, *_envelope_fields(), empty, empty, empty, empty, empty, empty
             )
 
     def test_normalized_url_duplicate_rejected(self):
@@ -495,7 +531,7 @@ class EvidenceMetadataTests(unittest.TestCase):
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
         )
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+            c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
     def test_distinct_path_case_NOT_deduped(self):
         # Stage 5 correction: path is case-sensitive; two URLs differing only
@@ -508,13 +544,13 @@ class EvidenceMetadataTests(unittest.TestCase):
             ),
             classes=(gf.EC_OFFICIAL_GOVERNANCE, gf.EC_OFFICIAL_GOVERNANCE),
         )
-        c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)  # no raise
+        c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)  # no raise
 
     def test_bad_evidence_class_rejected(self):
         c, rid = self._prep()
         urls, cls, rel, auth, tm, rp = _evidence_bundle(classes=("BOGUS",))
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+            c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
     def test_evidence_array_lengths_must_match(self):
         c, rid = self._prep()
@@ -525,16 +561,16 @@ class EvidenceMetadataTests(unittest.TestCase):
         tm = shim.DynArray(["t", "t"])
         rp = shim.DynArray([gf.RENDER_PROFILE_STANDARD, gf.RENDER_PROFILE_STANDARD])
         with self.assertRaises(UserError):
-            c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+            c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
 
 class CaseAndIndexTests(unittest.TestCase):
     def test_root_envelope_case_shape(self):
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
         case = c.get_case(case_id)
         self.assertEqual(case.case_type, gf.CASE_TYPE_ROOT_ENVELOPE)
         self.assertEqual(int(case.target_id), int(rid))
@@ -551,7 +587,7 @@ class CaseAndIndexTests(unittest.TestCase):
         c = _fresh()
         did = c.register_dao("A", "https://a")
         for i in range(5):
-            c.import_root_proposal(did, f"EP-{i}", "T", f"https://x/{i}", _params([]))
+            c.import_root_proposal(did, f"EP-{i}", "T", f"https://x/{i}", *_params_kv([]))
         page1 = c.list_root_proposals_by_dao(did, shim.u256(0), shim.u32(2))
         self.assertEqual([int(x) for x in page1.items], [1, 2])
         self.assertEqual(int(page1.next_cursor), 2)
@@ -590,14 +626,21 @@ class ProhibitedBehaviorTests(unittest.TestCase):
         # unavailable in production.
         c = _fresh()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         with self.assertRaises(UserError):
             c.create_fork(
                 rid,
                 gf.PARENT_KIND_ROOT,
                 b"",
                 shim.DynArray([]),
-                gf.ForkBody(title="F", summary="", structured_parameters=shim.DynArray([]), reasoning=""),
+                shim.DynArray([]),
+                shim.DynArray([]),
+                shim.DynArray([]),
+                "F",
+                "",
+                shim.DynArray([]),
+                shim.DynArray([]),
+                "",
             )
 
     def test_adjudicate_still_unimplemented(self):

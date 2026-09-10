@@ -170,6 +170,88 @@ def check_abi_counts(source: str) -> tuple[bool, str]:
     return ok, detail
 
 
+def check_no_dataclass_inputs(source: str) -> tuple[bool, str]:
+    """ABI compatibility guard (item I of the ABI correction's required
+    tests): no public write/admin method may declare a parameter typed as
+    a custom @allow_storage dataclass, or as DynArray[<custom dataclass>].
+    This is exactly the class of parameter that a live struct-argument
+    probe and the live submit_root_envelope failure confirmed this pinned
+    GenVM runtime cannot reconstruct from calldata (it arrives as a plain
+    dict, not the declared type). See docs/STORAGE_CONSTRUCTION_AUDIT.md
+    and the struct-argument probe report for the full investigation.
+
+    View-method inputs are also checked (they were already all scalars
+    per the audit, and must stay that way); dataclass-typed VIEW RETURN
+    values are explicitly fine and are not checked here -- output
+    reconstruction is a separate, already-confirmed-safe code path.
+    """
+    tree = ast.parse(source)
+    contract_cls = None
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Contract":
+            contract_cls = node
+            break
+    assert contract_cls is not None, "Contract class not found"
+
+    safe_scalars = {
+        "u8", "u16", "u32", "u64", "u128", "u256",
+        "i8", "i16", "i32", "i64",
+        "bigint", "str", "bytes", "bool", "float",
+    }
+
+    def deco_matches(decorators: list[ast.expr], want: tuple[str, ...]) -> bool:
+        for d in decorators:
+            path: list[str] = []
+            cur = d
+            while isinstance(cur, ast.Attribute):
+                path.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                path.append(cur.id)
+            path.reverse()
+            if tuple(path) == want:
+                return True
+        return False
+
+    def classify(ann: ast.expr | None) -> str:
+        if ann is None:
+            return "UNANNOTATED"
+        if isinstance(ann, ast.Name):
+            return "SAFE" if ann.id in safe_scalars else f"UNSAFE_CUSTOM({ann.id})"
+        if isinstance(ann, ast.Subscript):
+            base = ast.unparse(ann.value)
+            if base == "DynArray":
+                inner = ann.slice
+                inner_name = inner.id if isinstance(inner, ast.Name) else ast.unparse(inner)
+                if inner_name in safe_scalars:
+                    return "SAFE"
+                return f"UNSAFE_ARRAY_OF_CUSTOM({inner_name})"
+            return f"UNKNOWN_SUBSCRIPT({ast.unparse(ann)})"
+        return f"UNKNOWN({ast.unparse(ann)})"
+
+    offenders = []
+    for item in contract_cls.body:
+        if not isinstance(item, ast.FunctionDef):
+            continue
+        if item.name.startswith("__"):
+            continue
+        is_public = deco_matches(item.decorator_list, ("gl", "public", "view")) or deco_matches(
+            item.decorator_list, ("gl", "public", "write")
+        ) or deco_matches(item.decorator_list, ("gl", "public", "write", "payable")) or item.name in ("pause", "unpause")
+        if not is_public:
+            continue
+        for a in item.args.args:
+            if a.arg == "self":
+                continue
+            cls = classify(a.annotation)
+            if cls.startswith("UNSAFE") or cls.startswith("UNKNOWN"):
+                offenders.append(f"{item.name}.{a.arg}: {cls}")
+
+    if offenders:
+        return False, "runtime-unsafe public input(s) found: " + "; ".join(offenders)
+    return True, "every public write/admin/view input is a safe scalar or DynArray-of-scalar"
+
+
 def check_no_duplicate_abi_names(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     seen: dict[str, str] = {}
@@ -309,6 +391,7 @@ def main() -> int:
         ("no gl.message.value read", check_no_message_value_read(source)),
         ("no duplicate abi names", check_no_duplicate_abi_names(source)),
         ("abi counts", check_abi_counts(source)),
+        ("no dataclass-typed public inputs", check_no_dataclass_inputs(source)),
         ("no unchanged delta kind", check_no_unchanged_delta_kind(source)),
         ("enum uniqueness", check_enum_uniqueness(source)),
         ("no full-slash kind", check_no_slashed_full_kind(source)),

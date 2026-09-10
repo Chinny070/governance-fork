@@ -1159,8 +1159,25 @@ class Contract(gl.Contract):
         external_proposal_id: str,
         title: str,
         proposal_url: str,
-        structured_parameters: DynArray[ParamKV],
+        structured_parameter_keys: DynArray[str],
+        structured_parameter_values: DynArray[str],
     ) -> u256:
+        # ABI compatibility correction: the public parameter was
+        # DynArray[ParamKV] -- a dataclass-typed array. Live testing (an
+        # isolated struct-argument probe, plus the live failure on
+        # submit_root_envelope's IntentEnvelope parameter) confirmed this
+        # pinned GenVM runtime decodes a dataclass-typed calldata value as
+        # a plain dict rather than reconstructing the declared type, so
+        # any populated DynArray[ParamKV] argument would fail identically
+        # (AttributeError on kv.key/kv.value) the moment validation touched
+        # it. structured_parameters is now carried across the public ABI
+        # as two parallel DynArray[str] arrays -- the same transport
+        # pattern already used elsewhere in this contract for evidence_urls
+        # / evidence_classes / etc. -- and reconstructed into genuine
+        # ParamKV instances (plain dataclass construction, not calldata
+        # decoding) immediately below, before any existing logic runs.
+        # See docs/STORAGE_CONSTRUCTION_AUDIT.md and the struct-argument
+        # probe report for the full investigation.
         if self.paused:
             raise gl.vm.UserError("paused")
         # Bounds
@@ -1178,6 +1195,17 @@ class Contract(gl.Contract):
             existing = self.roots_by_dao[dao_id]
             if len(existing) >= MAX_ROOTS_PER_DAO:
                 raise gl.vm.UserError("MAX_ROOTS_PER_DAO reached")
+        # Reconstruct structured_parameters from the parallel public
+        # arrays. Equal-length check first (atomic rejection, no partial
+        # reconstruction) -- this re-enforces an invariant that was
+        # previously implicit in ParamKV binding both fields together.
+        if len(structured_parameter_values) != len(structured_parameter_keys):
+            raise gl.vm.UserError("structured_parameter_keys/values length mismatch")
+        structured_parameters = []
+        for i in range(len(structured_parameter_keys)):
+            structured_parameters.append(
+                ParamKV(key=structured_parameter_keys[i], value=structured_parameter_values[i])
+            )
         # Structured parameter validation
         n_params = len(structured_parameters)
         if n_params > MAX_STRUCTURED_PARAMS:
@@ -1247,7 +1275,13 @@ class Contract(gl.Contract):
     def submit_root_envelope(
         self,
         root_id: u256,
-        envelope: IntentEnvelope,
+        objective: str,
+        beneficiary_class: str,
+        resource_type: str,
+        scope: str,
+        essential_constraints: DynArray[str],
+        mutable_dimensions: DynArray[str],
+        immutable_dimensions: DynArray[str],
         evidence_urls: DynArray[str],
         evidence_classes: DynArray[str],
         relevance_claims: DynArray[str],
@@ -1257,6 +1291,38 @@ class Contract(gl.Contract):
     ) -> u256:
         # Stage 3 does NOT read the incoming native-GEN value. Bond capture
         # is Stage 10. The payable signature is exposed for ABI stability.
+        #
+        # ABI compatibility correction: the public parameter was
+        # `envelope: IntentEnvelope` -- a dataclass-typed argument. This is
+        # the exact parameter whose live failure (AttributeError: 'dict'
+        # object has no attribute 'objective') triggered the whole
+        # investigation; confirmed again in isolation by the struct
+        # argument probe. IntentEnvelope's caller-controlled fields are now
+        # carried across the public ABI as individual primitives/simple
+        # DynArray[str] arrays and reconstructed into a genuine
+        # IntentEnvelope instance immediately below (plain dataclass
+        # construction, not calldata decoding), before any existing
+        # validation runs unchanged. `parent_proposal_fingerprint` and
+        # `envelope_version` are deliberately NOT public parameters -- the
+        # pre-existing logic further below already discards whatever a
+        # caller would have supplied for both and derives them itself
+        # (`parent_proposal_fingerprint=root.import_fingerprint`,
+        # `envelope_version=u32(1)`, in the bound_envelope construction);
+        # exposing them publicly was already pointless before this
+        # correction and remains so now. See
+        # docs/STORAGE_CONSTRUCTION_AUDIT.md and the struct-argument probe
+        # report for the full investigation.
+        envelope = IntentEnvelope(
+            objective=objective,
+            beneficiary_class=beneficiary_class,
+            resource_type=resource_type,
+            scope=scope,
+            essential_constraints=essential_constraints,
+            mutable_dimensions=mutable_dimensions,
+            immutable_dimensions=immutable_dimensions,
+            parent_proposal_fingerprint=b"",
+            envelope_version=u32(0),
+        )
         if self.paused:
             raise gl.vm.UserError("paused")
         if root_id not in self.roots:
@@ -1444,11 +1510,71 @@ class Contract(gl.Contract):
         parent_id: u256,
         parent_kind: str,
         parent_fingerprint: bytes,
-        delta: DynArray[DeltaEntry],
-        body: ForkBody,
+        delta_dimension_names: DynArray[str],
+        delta_parent_values: DynArray[str],
+        delta_fork_values: DynArray[str],
+        delta_claim_kinds: DynArray[str],
+        body_title: str,
+        body_summary: str,
+        body_structured_parameter_keys: DynArray[str],
+        body_structured_parameter_values: DynArray[str],
+        body_reasoning: str,
     ) -> u256:
         # Stage 4: payable ABI kept for stability. Stage 4 body does NOT
         # read the incoming native-GEN value. Bond capture is Stage 10.
+        #
+        # ABI compatibility correction: the public parameters were
+        # `delta: DynArray[DeltaEntry]` and `body: ForkBody` -- a
+        # dataclass-typed array and a direct dataclass argument. Live
+        # testing (the isolated struct-argument probe, and the confirmed
+        # live failure on submit_root_envelope's IntentEnvelope parameter)
+        # established this pinned GenVM runtime decodes any dataclass-typed
+        # calldata value as a plain dict rather than reconstructing the
+        # declared type -- both parameters would have failed the same way
+        # the moment validation touched a populated entry. delta and body
+        # are now carried across the public ABI as parallel
+        # primitives/DynArray[str] arrays and reconstructed into genuine
+        # DeltaEntry/ParamKV/ForkBody instances (plain dataclass
+        # construction, not calldata decoding) immediately below, before
+        # any existing validation runs unchanged. This create_fork path has
+        # never been live-reachable (it requires a FAITHFUL root, which
+        # only Stage 7's unimplemented adjudicate() can produce) so this
+        # correction is preventive, verified by local tests, not by a live
+        # repro on this exact method. See
+        # docs/STORAGE_CONSTRUCTION_AUDIT.md and the struct-argument probe
+        # report for the full investigation.
+        if len(delta_parent_values) != len(delta_dimension_names) or (
+            len(delta_fork_values) != len(delta_dimension_names)
+        ) or (
+            len(delta_claim_kinds) != len(delta_dimension_names)
+        ):
+            raise gl.vm.UserError("delta parallel arrays must have equal length")
+        delta = []
+        for i in range(len(delta_dimension_names)):
+            delta.append(
+                DeltaEntry(
+                    dimension_name=delta_dimension_names[i],
+                    parent_value=delta_parent_values[i],
+                    fork_value=delta_fork_values[i],
+                    claim_kind=delta_claim_kinds[i],
+                )
+            )
+        if len(body_structured_parameter_values) != len(body_structured_parameter_keys):
+            raise gl.vm.UserError("body_structured_parameter_keys/values length mismatch")
+        body_structured_parameters = []
+        for i in range(len(body_structured_parameter_keys)):
+            body_structured_parameters.append(
+                ParamKV(
+                    key=body_structured_parameter_keys[i],
+                    value=body_structured_parameter_values[i],
+                )
+            )
+        body = ForkBody(
+            title=body_title,
+            summary=body_summary,
+            structured_parameters=body_structured_parameters,
+            reasoning=body_reasoning,
+        )
         if self.paused:
             raise gl.vm.UserError("paused")
         # Resolve parent + eligibility. The FAITHFUL gate is the FIRST

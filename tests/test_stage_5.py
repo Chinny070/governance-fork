@@ -66,6 +66,53 @@ def _body(title="Fork A", params=(("allocation", "50000"), ("duration", "6 month
     )
 
 
+def _params_kv(pairs):
+    """ABI-compatibility replacement for _params(): returns the parallel
+    (keys, values) arrays import_root_proposal now takes directly.
+    """
+    return (
+        shim.DynArray([k for k, v in pairs]),
+        shim.DynArray([v for k, v in pairs]),
+    )
+
+
+def _delta_fields(entries):
+    """ABI-compatibility replacement for _delta(): returns the four
+    parallel arrays create_fork now takes directly, instead of a single
+    DynArray[DeltaEntry].
+    """
+    return (
+        shim.DynArray([n for (n, ck, pv, fv) in entries]),
+        shim.DynArray([pv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([fv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([ck for (n, ck, pv, fv) in entries]),
+    )
+
+
+def _envelope_fields(mutable=("allocation", "duration"),
+                      immutable=("beneficiary_class",)):
+    """ABI-compatibility replacement for _envelope(): returns the flattened
+    positional arguments submit_root_envelope now takes directly.
+    """
+    return (
+        "Fund ecosystem developer work.",
+        "Developers",
+        gf.RESOURCE_TREASURY,
+        "ecosystem-wide",
+        shim.DynArray(["must be for developer work"]),
+        shim.DynArray(list(mutable)),
+        shim.DynArray(list(immutable)),
+    )
+
+
+def _body_fields(title="Fork A", params=(("allocation", "50000"), ("duration", "6 months"))):
+    """ABI-compatibility replacement for _body(): returns the flattened
+    positional arguments create_fork now takes directly for the body.
+    """
+    keys, values = _params_kv(params)
+    return (title, "", keys, values, "")
+
+
 def _root_evidence_bundle():
     return (
         shim.DynArray(["https://gov.example.com/prop/1"]),
@@ -87,10 +134,10 @@ def _fresh_with_fork():
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
         did, "EP", "T", "https://x/1",
-        _params([("allocation", "100000"), ("duration", "6 months")]),
+        *_params_kv([("allocation", "100000"), ("duration", "6 months")]),
     )
     urls, cls, rel, auth, tm, rp = _root_evidence_bundle()
-    c.submit_root_envelope(rid, _envelope(), urls, cls, rel, auth, tm, rp)
+    c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
     # ---- test-harness flip ONLY ----
     r = c.get_root_proposal(rid)
     r.envelope_status = gf.ENVELOPE_FAITHFUL
@@ -100,8 +147,8 @@ def _fresh_with_fork():
     shim.set_sender(creator)
     fid = c.create_fork(
         rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-        _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-        _body(),
+        *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+        *_body_fields(),
     )
     return c, did, rid, fid, creator
 
@@ -600,9 +647,9 @@ class RootEnvelopeStillWorksTests(unittest.TestCase):
         shim.reset_message_context()
         c = gf.Contract()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         urls, ec, rel, auth, tm, rp = _root_evidence_bundle()
-        case_id = c.submit_root_envelope(rid, _envelope(), urls, ec, rel, auth, tm, rp)
+        case_id = c.submit_root_envelope(rid, *_envelope_fields(), urls, ec, rel, auth, tm, rp)
         r = c.get_root_proposal(rid)
         self.assertEqual(r.envelope_status, gf.ENVELOPE_EVIDENCE_OPEN)
         self.assertEqual(int(r.envelope_case_id), int(case_id))
@@ -619,14 +666,14 @@ class FaithfulGateUnchangedTests(unittest.TestCase):
         c = gf.Contract()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(did, "EP", "T", "https://x/1",
-                                     _params([("allocation", "100000")]))
+                                     *_params_kv([("allocation", "100000")]))
         # Envelope not submitted -> refuse
         r = c.get_root_proposal(rid)
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-                _body(params=[("allocation", "50000")]),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+                *_body_fields(params=[("allocation", "50000")]),
             )
 
 

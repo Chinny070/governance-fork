@@ -75,6 +75,61 @@ def _body(title="Fork A", summary="", reasoning="", params=()):
     )
 
 
+def _params_kv(pairs):
+    """ABI-compatibility replacement for _params(): returns the parallel
+    (keys, values) arrays import_root_proposal now takes directly.
+    """
+    return (
+        shim.DynArray([k for k, v in pairs]),
+        shim.DynArray([v for k, v in pairs]),
+    )
+
+
+def _delta_fields(entries):
+    """ABI-compatibility replacement for _delta(): returns the four
+    parallel arrays create_fork now takes directly, instead of a single
+    DynArray[DeltaEntry].
+    """
+    return (
+        shim.DynArray([n for (n, ck, pv, fv) in entries]),
+        shim.DynArray([pv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([fv for (n, ck, pv, fv) in entries]),
+        shim.DynArray([ck for (n, ck, pv, fv) in entries]),
+    )
+
+
+def _envelope_fields(
+    objective="Fund ecosystem developer work.",
+    beneficiary_class="Developers",
+    resource_type=gf.RESOURCE_TREASURY,
+    scope="ecosystem-wide",
+    essential=("must be for developer work",),
+    mutable=("allocation", "duration"),
+    immutable=("beneficiary_class",),
+):
+    """ABI-compatibility replacement for _envelope(): returns the flattened
+    positional arguments submit_root_envelope now takes directly.
+    """
+    return (
+        objective,
+        beneficiary_class,
+        resource_type,
+        scope,
+        shim.DynArray(essential),
+        shim.DynArray(mutable),
+        shim.DynArray(immutable),
+    )
+
+
+def _body_fields(title="Fork A", summary="", reasoning="", params=()):
+    """ABI-compatibility replacement for _body(): returns the flattened
+    positional arguments create_fork now takes directly for the body,
+    instead of a single ForkBody object.
+    """
+    keys, values = _params_kv(params)
+    return (title, summary, keys, values, reasoning)
+
+
 def _evidence_bundle_stage3():
     urls = shim.DynArray(["https://gov.example.com/prop/1"])
     cls = shim.DynArray([gf.EC_OFFICIAL_GOVERNANCE])
@@ -98,12 +153,12 @@ def _fresh_with_faithful_root(mutable=("allocation", "duration"),
     c = gf.Contract()
     did = c.register_dao("A", "https://a")
     rid = c.import_root_proposal(
-        did, "EP", "T", "https://x/1", _params(parent_params)
+        did, "EP", "T", "https://x/1", *_params_kv(parent_params)
     )
     urls, cls, rel, auth, tm, rp = _evidence_bundle_stage3()
     c.submit_root_envelope(
         rid,
-        _envelope(mutable=mutable, immutable=immutable),
+        *_envelope_fields(mutable=mutable, immutable=immutable),
         urls, cls, rel, auth, tm, rp,
     )
     # ---- test-harness flip only ---- (no contract path enables this)
@@ -127,7 +182,7 @@ class CreateForkGateTests(unittest.TestCase):
         shim.reset_message_context()
         c = gf.Contract()
         did = c.register_dao("A", "https://a")
-        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", _params([]))
+        rid = c.import_root_proposal(did, "EP", "T", "https://x/1", *_params_kv([]))
         r = c.get_root_proposal(rid)
         r.envelope_status = envelope_status
         c.roots[rid] = r
@@ -138,8 +193,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError) as ctx:
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
         self.assertIn("faithful", str(ctx.exception))
 
@@ -148,8 +203,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
     def test_rejects_evidence_frozen(self):
@@ -157,8 +212,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
     def test_rejects_adjudicating(self):
@@ -166,8 +221,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
     def test_rejects_rejected(self):
@@ -175,8 +230,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
     def test_rejects_unclear(self):
@@ -184,8 +239,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
     def test_invalid_parent_kind_rejected(self):
@@ -193,8 +248,8 @@ class CreateForkGateTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, "PARENT_UNKNOWN", fp,
-                _delta([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
-                _body(title="F"),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "", "50000")]),
+                *_body_fields(title="F"),
             )
 
 
@@ -464,8 +519,8 @@ class CreateForkEndToEndTests(unittest.TestCase):
         r = c.get_root_proposal(rid)
         fid = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-            _body(title="Half budget", params=[("allocation", "50000"), ("duration", "6 months")]),
+            *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+            *_body_fields(title="Half budget", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         f = c.get_fork(fid)
         self.assertEqual(int(f.parent_id), int(rid))
@@ -481,8 +536,8 @@ class CreateForkEndToEndTests(unittest.TestCase):
         with self.assertRaises(UserError) as ctx:
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, b"\x00" * 32,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-                _body(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+                *_body_fields(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
             )
         self.assertIn("parent_fingerprint mismatch", str(ctx.exception))
 
@@ -492,9 +547,9 @@ class CreateForkEndToEndTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
                 # duration secretly changed but not declared
-                _body(title="F", params=[("allocation", "50000"), ("duration", "12 months")]),
+                *_body_fields(title="F", params=[("allocation", "50000"), ("duration", "12 months")]),
             )
 
     def test_immutable_mutation_via_delta_rejected(self):
@@ -506,8 +561,8 @@ class CreateForkEndToEndTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("duration", gf.CLAIM_NARROWED, "6 months", "3 months")]),
-                _body(title="F", params=[("allocation", "100000"), ("duration", "3 months")]),
+                *_delta_fields([("duration", gf.CLAIM_NARROWED, "6 months", "3 months")]),
+                *_body_fields(title="F", params=[("allocation", "100000"), ("duration", "3 months")]),
             )
 
     def test_indexes_updated(self):
@@ -515,8 +570,8 @@ class CreateForkEndToEndTests(unittest.TestCase):
         r = c.get_root_proposal(rid)
         fid = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-            _body(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
+            *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+            *_body_fields(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         by_root = c.list_forks_of_root(rid, shim.u256(0), shim.u32(50))
         by_parent = c.list_forks_of_parent(rid, shim.u256(0), shim.u32(50))
@@ -528,13 +583,13 @@ class CreateForkEndToEndTests(unittest.TestCase):
         r = c.get_root_proposal(rid)
         fid_a = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-            _body(title="Half", params=[("allocation", "50000"), ("duration", "6 months")]),
+            *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+            *_body_fields(title="Half", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         fid_b = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("duration", gf.CLAIM_NARROWED, "6 months", "3 months")]),
-            _body(title="Short", params=[("allocation", "100000"), ("duration", "3 months")]),
+            *_delta_fields([("duration", gf.CLAIM_NARROWED, "6 months", "3 months")]),
+            *_body_fields(title="Short", params=[("allocation", "100000"), ("duration", "3 months")]),
         )
         self.assertNotEqual(int(fid_a), int(fid_b))
         page = c.list_forks_of_parent(rid, shim.u256(0), shim.u32(50))
@@ -552,8 +607,8 @@ class TreeInvariantsTests(unittest.TestCase):
         r = c.get_root_proposal(rid)
         parent_fid = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-            _body(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
+            *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+            *_body_fields(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         pf = c.get_fork(parent_fid)
         # Parent status is FORK_DRAFT at this stage; attempting to fork it
@@ -561,8 +616,8 @@ class TreeInvariantsTests(unittest.TestCase):
         with self.assertRaises(UserError) as ctx:
             c.create_fork(
                 parent_fid, gf.PARENT_KIND_FORK, pf.body_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "50000", "25000")]),
-                _body(title="C", params=[("allocation", "25000"), ("duration", "6 months")]),
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "50000", "25000")]),
+                *_body_fields(title="C", params=[("allocation", "25000"), ("duration", "6 months")]),
             )
         self.assertIn("parent fork not finalized faithful", str(ctx.exception))
 
@@ -574,8 +629,8 @@ class TreeInvariantsTests(unittest.TestCase):
         r = c.get_root_proposal(rid)
         prev_id = c.create_fork(
             rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-            _delta([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
-            _body(title="F1", params=[("allocation", "50000"), ("duration", "6 months")]),
+            *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "50000")]),
+            *_body_fields(title="F1", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         prev = c.get_fork(prev_id)
         # Depth 1
@@ -589,9 +644,9 @@ class TreeInvariantsTests(unittest.TestCase):
             new_val = current_fork_val // 2
             new_id = c.create_fork(
                 prev_id, gf.PARENT_KIND_FORK, prev.body_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED,
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED,
                         str(current_fork_val), str(new_val))]),
-                _body(title=f"Fd{depth}",
+                *_body_fields(title=f"Fd{depth}",
                       params=[("allocation", str(new_val)),
                               ("duration", "6 months")]),
             )
@@ -605,9 +660,9 @@ class TreeInvariantsTests(unittest.TestCase):
         with self.assertRaises(UserError) as ctx:
             c.create_fork(
                 prev_id, gf.PARENT_KIND_FORK, prev.body_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED,
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED,
                         str(current_fork_val), str(current_fork_val // 2))]),
-                _body(title="TooDeep",
+                *_body_fields(title="TooDeep",
                       params=[("allocation", str(current_fork_val // 2)),
                               ("duration", "6 months")]),
             )
@@ -620,15 +675,15 @@ class TreeInvariantsTests(unittest.TestCase):
         for i in range(gf.MAX_CHILDREN_PER_PARENT):
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", str(50000 + i))]),
-                _body(title=f"F{i}",
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", str(50000 + i))]),
+                *_body_fields(title=f"F{i}",
                       params=[("allocation", str(50000 + i)), ("duration", "6 months")]),
             )
         with self.assertRaises(UserError) as ctx:
             c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", "99999")]),
-                _body(title="Overflow",
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", "99999")]),
+                *_body_fields(title="Overflow",
                       params=[("allocation", "99999"), ("duration", "6 months")]),
             )
         self.assertIn("MAX_CHILDREN_PER_PARENT", str(ctx.exception))
@@ -646,8 +701,8 @@ class CycleImpossibleTests(unittest.TestCase):
         for i in range(3):
             fid = c.create_fork(
                 rid, gf.PARENT_KIND_ROOT, r.import_fingerprint,
-                _delta([("allocation", gf.CLAIM_NARROWED, "100000", str(50000 + i))]),
-                _body(title=f"F{i}",
+                *_delta_fields([("allocation", gf.CLAIM_NARROWED, "100000", str(50000 + i))]),
+                *_body_fields(title=f"F{i}",
                       params=[("allocation", str(50000 + i)), ("duration", "6 months")]),
             )
             ids.append(int(fid))

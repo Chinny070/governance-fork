@@ -249,7 +249,7 @@ def check_governance_fork_untouched():
         return False, "governance_fork.py not found"
     raw = PROD_PATH.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
-    expected = "2e3aef2281b6855a3cc21f7b46f8c5b06598bb842e927ea58c374d894bd5cef9"
+    expected = "cbfe8cb0dc89ab3ae5d4aefa31f1a77e1ca47ecf4db737ae4d5264310194f004"
     if sha != expected:
         return False, f"governance_fork.py SHA-256 changed: {sha} (expected {expected})"
     return True, f"governance_fork.py unchanged, sha256={sha}"
