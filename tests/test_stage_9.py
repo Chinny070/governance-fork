@@ -257,6 +257,23 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(c.get_bond(bid).settlement_kind, gf.BOND_SETTLED_FULL_REFUND)
         self.assertEqual(int(c.get_bond(bid).refund_amount), BOND)
 
+    def test_E2_retry_exhaustion_terminal_bond_not_trapped(self):
+        # No verdict was ever produced (retry-exhaustion -> ENVELOPE_UNCLEAR
+        # with current_verdict_id == 0). The proposer's envelope bond must
+        # still be 100%-refundable, not trapped.
+        c, rid, case_id, eids = s7._seal_root()
+        for _ in range(gf.MAX_RETRIES_PER_CASE):
+            c.adjudicate(case_id)
+        c.adjudicate(case_id)  # budget spent -> terminal
+        self.assertEqual(c.get_case(case_id).state, gf.CASE_UNDETERMINED_TERMINAL)
+        self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_UNCLEAR)
+        self.assertEqual(int(c.get_root_proposal(rid).current_verdict_id), 0)
+        bid = _bond_ids(c, rid, gf.TARGET_KIND_ROOT_ENVELOPE)[0]
+        before = shim.balance(DEFAULT)
+        c.settle_bond(bid)
+        self.assertEqual(c.get_bond(bid).settlement_kind, gf.BOND_SETTLED_FULL_REFUND)
+        self.assertEqual(shim.balance(DEFAULT) - before, BOND)
+
     def test_F_settlement_replay_rejected(self):
         c, rid = _finalized_root()
         bid = _bond_ids(c, rid, gf.TARGET_KIND_ROOT_ENVELOPE)[0]

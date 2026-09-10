@@ -3739,8 +3739,16 @@ class Contract(gl.Contract):
             if not self._fork_is_final(fork.status):
                 raise gl.vm.UserError("target not finalized")
             gv = fork.current_verdict_id
-        if int(gv) == 0 or gv not in self.verdicts:
-            raise gl.vm.UserError("no governing verdict")
+        # Retry-exhaustion terminal: the target is final (ENVELOPE_UNCLEAR /
+        # FORK_FINALIZED_UNCLEAR) but no verdict was ever produced. Nothing
+        # is attributable -> treat exactly like an UNCLEAR verdict, so the
+        # creator/proposer bond is a 100% refund and is never trapped.
+        # (A CHALLENGE bond cannot exist here -- challenge_verdict requires
+        # a decisive verdict to challenge.)
+        if int(gv) == 0:
+            return VERDICT_UNCLEAR
+        if gv not in self.verdicts:
+            raise gl.vm.UserError("governing verdict missing")
         return self.verdicts[gv].verdict
 
     @gl.public.write
