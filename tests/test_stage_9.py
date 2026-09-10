@@ -91,16 +91,41 @@ class CaptureTests(unittest.TestCase):
         return c, rid
 
     def test_lock_bond_zero_rejected(self):
+        # the ONLY rejection in lock_bond -- and a zero value traps nothing.
         c, rid = self._root_ready()
         shim.set_value(0)
         with self.assertRaises(UserError):
             c.lock_bond(gf.BOND_PURPOSE_ENVELOPE)
 
-    def test_lock_bond_bad_purpose_rejected(self):
+    def test_lock_bond_bad_purpose_maps_to_unrecognised(self):
+        # lock_bond never reverts once value is attached: an unknown purpose
+        # yields an UNRECOGNISED bond that no method will consume but that is
+        # fully refundable.
         c, rid = self._root_ready()
-        shim.set_value(BOND)
+        bid = shim.lock(c, "NONSENSE", BOND)
+        b = c.get_bond(bid)
+        self.assertEqual(b.purpose, gf.BOND_PURPOSE_UNRECOGNISED)
+        self.assertEqual(int(b.target_id), 0)
         with self.assertRaises(UserError):
-            c.lock_bond("NONSENSE")
+            c.submit_root_envelope(bid, rid, *h._evidence_arrays(("https://x/1",)),
+                                   *h._envelope_fields())  # wrong order ok: reverts at consume
+        before = shim.balance(DEFAULT)
+        c.settle_bond(bid)
+        self.assertEqual(c.get_bond(bid).settlement_kind, gf.BOND_SETTLED_FULL_REFUND)
+        self.assertEqual(shim.balance(DEFAULT) - before, BOND)
+
+    def test_lock_bond_while_paused_ok_and_refundable(self):
+        # pause must NOT revert lock_bond (that would trap the value); it
+        # blocks the CONSUMING step instead.
+        c, rid = self._root_ready()
+        c.pause()
+        bid = shim.lock(c, gf.BOND_PURPOSE_ENVELOPE, BOND)
+        self.assertEqual(int(c.get_bond(bid).amount), BOND)
+        with self.assertRaises(UserError):  # consuming is paused-gated
+            c.submit_root_envelope(bid, rid, *h._envelope_fields(),
+                                   *h._evidence_arrays(("https://x/1",)))
+        c.settle_bond(bid)   # settle is not paused-gated
+        self.assertEqual(c.get_bond(bid).settlement_kind, gf.BOND_SETTLED_FULL_REFUND)
 
     def test_wrong_bond_amount_rejected_at_consume(self):
         # lock_bond accepts any nonzero value; the exact-amount check is in

@@ -146,7 +146,19 @@ def check_lock_bond_is_only_payable(source: str) -> tuple[bool, str]:
                 payable.append(item.name)
     if payable != ["lock_bond"]:
         return False, f"payable methods must be exactly ['lock_bond'], got {payable}"
-    return True, "lock_bond is the only payable method"
+    # lock_bond must not revert for a policy reason once value is attached
+    # (a reverted payable call traps its value on this runtime). Its body
+    # must not check self.paused and must contain exactly one raise (the
+    # zero-value guard, which traps nothing).
+    for item in contract.body:
+        if isinstance(item, ast.FunctionDef) and item.name == "lock_bond":
+            seg = ast.get_source_segment(source, item) or ""
+            if "self.paused" in seg:
+                return False, "lock_bond must not be paused-gated (would trap value)"
+            raises = sum(1 for n in ast.walk(item) if isinstance(n, ast.Raise))
+            if raises != 1:
+                return False, f"lock_bond has {raises} raise statements, expected 1 (zero-value guard)"
+    return True, "lock_bond is the only payable method; not paused-gated; single zero-value guard"
 
 
 def check_semantic_calls_unwrapped(source: str) -> tuple[bool, str]:

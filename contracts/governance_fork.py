@@ -340,6 +340,11 @@ CHALLENGE_RESOLVED_UNCLEAR = "RESOLVED_UNCLEAR"
 BOND_PURPOSE_FORK_CREATION = "FORK_CREATION"
 BOND_PURPOSE_ENVELOPE = "ENVELOPE"
 BOND_PURPOSE_CHALLENGE = "CHALLENGE"
+# Stage 9: a bond locked with an unrecognised purpose string. lock_bond
+# never reverts (that would trap the value), so it maps any unknown
+# purpose to this -- the bond then can't be consumed by any method and is
+# 100%-refundable via settle_bond.
+BOND_PURPOSE_UNRECOGNISED = "UNRECOGNISED"
 
 # Bond settlement kind
 BOND_UNSETTLED = "UNSETTLED"
@@ -3625,15 +3630,23 @@ class Contract(gl.Contract):
         # a bad `purpose` or a zero value is the only rejection and neither
         # traps GEN. The exact-amount / target-eligibility checks happen in
         # the (non-payable, safely revertible) consuming method.
-        if self.paused:
-            raise gl.vm.UserError("paused")
-        if (purpose != BOND_PURPOSE_FORK_CREATION
-                and purpose != BOND_PURPOSE_ENVELOPE
-                and purpose != BOND_PURPOSE_CHALLENGE):
-            raise gl.vm.UserError("unknown bond purpose")
+        #
+        # NEVER reverts once value is attached (that would trap the value on
+        # this runtime). It does not validate `purpose` and is NOT
+        # paused-gated: an unknown purpose or a pause just yields an
+        # UNASSIGNED bond that no consuming method will accept and that is
+        # 100%-refundable via settle_bond. Pause still blocks new exposure
+        # because create_fork / submit_root_envelope / challenge_verdict all
+        # reject while paused. The one rejection here -- zero value --
+        # traps nothing.
         v = gl.message.value
         if int(v) == 0:
             raise gl.vm.UserError("bond value required")
+        p = purpose
+        if (p != BOND_PURPOSE_FORK_CREATION
+                and p != BOND_PURPOSE_ENVELOPE
+                and p != BOND_PURPOSE_CHALLENGE):
+            p = BOND_PURPOSE_UNRECOGNISED
         bond_id = self.next_bond_id
         self.next_bond_id = u256(int(bond_id) + 1)
         self.bonds[bond_id] = Bond(
@@ -3641,7 +3654,7 @@ class Contract(gl.Contract):
             amount=u256(int(v)),
             target_id=u256(0),
             target_kind="",
-            purpose=purpose,
+            purpose=p,
             settlement_kind=BOND_UNSETTLED,
             settled=False,
             settled_at=u256(0),
