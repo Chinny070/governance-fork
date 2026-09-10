@@ -64,6 +64,15 @@ Capture is therefore split into lock → consume:
 An UNASSIGNED bond (`target_id == 0`) settles as a plain 100 % refund with
 no finalize check.
 
+### 2a. Retry-exhaustion terminal (live-fix)
+
+If adjudication exhausts its retry budget without ever producing a verdict
+the target becomes final (`ENVELOPE_UNCLEAR` / `FORK_FINALIZED_UNCLEAR`)
+with `current_verdict_id == 0`. `_target_final_verdict_str` returns
+`UNCLEAR_VERDICT` in that case, so the creator/proposer bond settles as a
+plain 100 % refund and is never trapped. (A CHALLENGE bond cannot exist
+here — `challenge_verdict` needs a decisive verdict to challenge.)
+
 ## 3. Disposition (deterministic, from the finalized verdict)
 
 `settle_bond(bond_id)` — **not paused-gated** (pause blocks new exposure,
