@@ -3,16 +3,20 @@ import { useWallet } from "../lib/wallet";
 
 /**
  * Wraps write actions. Renders children only when a wallet is connected on
- * StudioNet; otherwise shows the reason and a fix button.
+ * StudioNet; otherwise shows the reason and a fix control.
  */
 export function Guarded({ children }: { children: ReactNode }) {
   const w = useWallet();
 
   if (!w.account) {
     return (
-      <div className="notice info">
-        Connect a wallet to act on this proposal.{" "}
-        <button className="small primary" onClick={w.connect} disabled={w.connecting}>
+      <div className="note blue">
+        Connect a wallet to act.{" "}
+        <button
+          className="primary small"
+          onClick={w.connect}
+          disabled={w.connecting}
+        >
           {w.connecting ? "Connecting…" : "Connect wallet"}
         </button>
       </div>
@@ -20,7 +24,7 @@ export function Guarded({ children }: { children: ReactNode }) {
   }
   if (!w.onStudionet) {
     return (
-      <div className="notice warn">
+      <div className="note coral">
         Wrong network.{" "}
         <button className="small" onClick={w.switchNetwork}>
           Switch to StudioNet
@@ -29,12 +33,4 @@ export function Guarded({ children }: { children: ReactNode }) {
     );
   }
   return <>{children}</>;
-}
-
-export function useWriteClientOrThrow() {
-  const w = useWallet();
-  return () => {
-    if (!w.writeClient) throw new Error("Wallet not connected.");
-    return w.writeClient;
-  };
 }

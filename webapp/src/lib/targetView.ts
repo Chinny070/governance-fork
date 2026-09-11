@@ -37,6 +37,10 @@ export interface TargetView {
   id: bigint;
   root?: RootProposal;
   fork?: Fork;
+  /** For a fork: the root proposal it descends from (for "Original intent"). */
+  rootProposal?: RootProposal;
+  /** For a fork: its immediate parent, when the parent is another fork. */
+  parentFork?: Fork;
   status: string;
   title: string;
   daoId: bigint;
@@ -105,6 +109,14 @@ export async function loadTarget(
       isFinal: FORK_FINAL.has(fork.status),
       isFaithfulFinal: fork.status === "FINALIZED_FAITHFUL",
     };
+  }
+
+  if (kind === "fork") {
+    base.rootProposal = await getRootProposal(base.rootId!);
+    const f = base.fork!;
+    if (f.parent_kind === "PARENT_FORK") {
+      base.parentFork = await getFork(BigInt(f.parent_id));
+    }
   }
 
   const evidenceCaseId = base.evidenceCaseId!;

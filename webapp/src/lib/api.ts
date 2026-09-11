@@ -13,7 +13,12 @@ import {
   hexToBytes,
   WriteResult,
 } from "./genlayer";
-import { BOND_AMOUNT_WEI, BOND_PURPOSE, TARGET_KIND } from "./enums";
+import {
+  BOND_AMOUNT_WEI,
+  BOND_PURPOSE,
+  CHALLENGER_FLIP_REWARD_WEI,
+  TARGET_KIND,
+} from "./enums";
 import type {
   Bond,
   Case,
@@ -334,5 +339,5 @@ export function parseId(raw: string | undefined, ctx: string): bigint {
   return BigInt(m[0]);
 }
 
-export { BOND_AMOUNT_WEI, BOND_PURPOSE, TARGET_KIND };
+export { BOND_AMOUNT_WEI, BOND_PURPOSE, CHALLENGER_FLIP_REWARD_WEI, TARGET_KIND };
 export type { GenLayerClient, WriteResult };

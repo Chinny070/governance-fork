@@ -3,78 +3,87 @@ import { STATUS_HELP } from "../lib/enums";
 import { explorerAddressUrl } from "../lib/contract";
 import { shortAddr, shortHex, isEmptyHex } from "../lib/format";
 
-type Tone = "ok" | "warn" | "bad" | "info" | "neutral";
+export type Tone = "green" | "red" | "coral" | "blue" | "neutral";
 
-// Several contract enums share bare string values ("OPEN", "ADJUDICATING",
-// "INVALID", …). A single lookup table can't hold them, so classify by
-// recognisable substrings — good enough for status colouring.
-const BAD = /REJECTED$|NOT_FAITHFUL$|^INVALID$|_INVALID$|^ABORTED$/;
-const OK = /(?<!NOT_)FAITHFUL$|^SUCCESS$|^FETCHED$|FULL_REFUND$|CHALLENGER_REWARD$|RESOLVED_FLIPPED$/;
-const WARN = /ADJUDICATING$|CHALLENGE_OPEN$|CHALLENGE_WINDOW$|VERDICT_PROPOSED$|^OPEN$|UNUSABLE_SHORT$|PARTIAL_SLASH$/;
-const INFO = /EVIDENCE_OPEN$|EVIDENCE_CLOSED$|EVIDENCE_FROZEN$|CASE_FROZEN$|^UNSETTLED$/;
+// Semantic colour, per the design system:
+//   green  — successful / finalized-good only
+//   red    — rejected / danger only
+//   coral  — forks, challenges, divergence, penalties
+//   blue   — active / in-progress
+//   neutral — everything else (draft, unclear, not-yet)
+const RED =
+  /REJECTED$|NOT_FAITHFUL$|^INVALID$|_INVALID$|^ABORTED$|RESOLVED_INVALID$/;
+const GREEN =
+  /(?<!NOT_)FAITHFUL$|^SUCCESS$|^FETCHED$|FULL_REFUND$|CHALLENGER_REWARD$|RESOLVED_FLIPPED$/;
+const CORAL =
+  /CHALLENGE_OPEN$|CHALLENGE_WINDOW$|^OPEN$|PARTIAL_SLASH$|UNUSABLE_SHORT$|^FORK$/;
+const BLUE =
+  /ADJUDICATING$|VERDICT_PROPOSED$|EVIDENCE_OPEN$|EVIDENCE_CLOSED$|EVIDENCE_FROZEN$|CASE_FROZEN$|^UNSETTLED$|^ROOT_ENVELOPE$/;
 
 export function toneFor(value: string): Tone {
-  if (BAD.test(value)) return "bad";
-  if (OK.test(value)) return "ok";
-  if (WARN.test(value)) return "warn";
-  if (INFO.test(value)) return "info";
+  if (RED.test(value)) return "red";
+  if (GREEN.test(value)) return "green";
+  if (CORAL.test(value)) return "coral";
+  if (BLUE.test(value)) return "blue";
   return "neutral";
 }
 
-export function StatusBadge({ value }: { value: string }) {
-  const tone = toneFor(value);
-  const help = STATUS_HELP[value];
-  return (
-    <span className={`badge ${tone}`} title={help ?? value}>
-      <span className="pill-dot" />
-      {value}
-    </span>
-  );
-}
-
-export function Badge({
+export function Tag({
   children,
   tone = "neutral",
+  dot,
   title,
 }: {
   children: ReactNode;
   tone?: Tone;
+  dot?: boolean;
   title?: string;
 }) {
   return (
-    <span className={`badge ${tone}`} title={title}>
+    <span className={`tag ${tone === "neutral" ? "" : tone}`} title={title}>
+      {dot && <span className="dot" />}
       {children}
     </span>
   );
 }
 
-export function Card({
-  children,
-  title,
-  actions,
+export function StatusTag({
+  value,
+  tone,
+  dot = true,
 }: {
-  children: ReactNode;
-  title?: ReactNode;
-  actions?: ReactNode;
+  value: string;
+  tone?: Tone;
+  dot?: boolean;
 }) {
   return (
-    <div className="card">
-      {(title || actions) && (
-        <div
-          className="row"
-          style={{ justifyContent: "space-between", marginBottom: 12 }}
-        >
-          {title ? <h3 style={{ margin: 0 }}>{title}</h3> : <span />}
-          {actions}
-        </div>
-      )}
-      {children}
+    <Tag tone={tone ?? toneFor(value)} dot={dot} title={STATUS_HELP[value] ?? value}>
+      {value}
+    </Tag>
+  );
+}
+
+export function SectionHead({
+  eyebrow,
+  title,
+  right,
+}: {
+  eyebrow: string;
+  title?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="section-head">
+      <span className="eyebrow">{eyebrow}</span>
+      {title && <h3>{title}</h3>}
+      <span className="spacer" />
+      {right}
     </div>
   );
 }
 
-export function KV({ children }: { children: ReactNode }) {
-  return <dl className="kv">{children}</dl>;
+export function DL({ children }: { children: ReactNode }) {
+  return <dl className="dl">{children}</dl>;
 }
 
 export function Row({ k, children }: { k: string; children: ReactNode }) {
@@ -102,7 +111,12 @@ export function AddrChip({ addr }: { addr?: string | null }) {
 }
 
 export function HexChip({ hex, label }: { hex?: string | null; label?: string }) {
-  if (isEmptyHex(hex)) return <span className="faint">— {label ? `(${label} not set)` : ""}</span>;
+  if (isEmptyHex(hex))
+    return (
+      <span className="faint tiny">
+        — {label ? `${label} not set` : ""}
+      </span>
+    );
   return (
     <span className="mono" title={hex ?? ""}>
       {shortHex(hex)}
@@ -110,14 +124,14 @@ export function HexChip({ hex, label }: { hex?: string | null; label?: string })
   );
 }
 
-export function Notice({
-  tone = "info",
+export function Note({
+  tone = "neutral",
   children,
 }: {
-  tone?: "ok" | "warn" | "bad" | "info";
+  tone?: "blue" | "coral" | "green" | "red" | "neutral";
   children: ReactNode;
 }) {
-  return <div className={`notice ${tone}`}>{children}</div>;
+  return <div className={`note ${tone === "neutral" ? "" : tone}`}>{children}</div>;
 }
 
 export function Spinner() {
@@ -126,7 +140,7 @@ export function Spinner() {
 
 export function Empty({ children }: { children: ReactNode }) {
   return (
-    <div className="muted tiny" style={{ padding: "8px 2px" }}>
+    <div className="muted tiny" style={{ padding: "10px 0" }}>
       {children}
     </div>
   );

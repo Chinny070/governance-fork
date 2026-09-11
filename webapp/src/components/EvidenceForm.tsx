@@ -49,13 +49,9 @@ export function EvidenceForm({ rows, onChange, max = 8 }: Props) {
   return (
     <div className="stack" style={{ gap: 10 }}>
       {rows.map((r, i) => (
-        <div
-          key={i}
-          className="card"
-          style={{ margin: 0, padding: 12, background: "var(--bg-sunken)" }}
-        >
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <strong className="tiny">Evidence #{i + 1}</strong>
+        <div key={i} className="panel-inset">
+          <div className="between" style={{ alignItems: "center" }}>
+            <strong className="mono tiny">SOURCE {String(i + 1).padStart(2, "0")}</strong>
             <button
               type="button"
               className="small ghost"
@@ -65,15 +61,15 @@ export function EvidenceForm({ rows, onChange, max = 8 }: Props) {
               Remove
             </button>
           </div>
-          <div style={{ marginTop: 8 }}>
-            <label>Source URL (must be a real, renderable page)</label>
+          <div className="field" style={{ marginTop: 8 }}>
+            <label>Source URL — a real, renderable page</label>
             <input
               value={r.url}
               placeholder="https://…"
               onChange={(e) => set(i, { url: e.target.value })}
             />
           </div>
-          <div className="grid2" style={{ marginTop: 8 }}>
+          <div className="grid-2" style={{ marginTop: 8 }}>
             <div>
               <label>Evidence class</label>
               <select
@@ -109,7 +105,7 @@ export function EvidenceForm({ rows, onChange, max = 8 }: Props) {
               onChange={(e) => set(i, { relevanceClaim: e.target.value })}
             />
           </div>
-          <div className="grid2" style={{ marginTop: 8 }}>
+          <div className="grid-2" style={{ marginTop: 8 }}>
             <div>
               <label>Authority claim</label>
               <input

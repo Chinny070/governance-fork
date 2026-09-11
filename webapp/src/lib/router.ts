@@ -50,7 +50,12 @@ export function navigate(r: Route) {
 export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => parse(window.location.hash));
   useEffect(() => {
-    const on = () => setRoute(parse(window.location.hash));
+    const on = () => {
+      setRoute(parse(window.location.hash));
+      // This is a client-side hash router — the browser never resets scroll
+      // on its own between "pages" the way a full navigation would.
+      window.scrollTo(0, 0);
+    };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);

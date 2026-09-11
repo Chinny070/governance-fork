@@ -1,154 +1,194 @@
-import { useMemo } from "react";
 import {
   collectAll,
   getConstants,
   getDao,
-  getRootProposal,
   listDaos,
   listRootsByDao,
 } from "../lib/api";
 import { formatGen } from "../lib/format";
 import { navigate } from "../lib/router";
 import { useAsync } from "../lib/useAsync";
-import type { Dao, RootProposal } from "../lib/types";
-import { Card, Empty, Spinner, StatusBadge } from "../components/ui";
+import { buildRootTree, type TreeNode } from "../lib/tree";
+import type { Dao } from "../lib/types";
+import { SectionHead, Spinner } from "../components/ui";
+import { LineageTree } from "../components/LineageTree";
+import { Mark } from "../components/Logo";
 
-interface DaoWithRoots {
-  id: bigint;
+interface RootEntry {
+  daoId: bigint;
   dao: Dao;
-  roots: { id: bigint; root: RootProposal }[];
+  tree: TreeNode;
 }
 
-async function loadRegistry(): Promise<DaoWithRoots[]> {
+async function loadTrees(): Promise<RootEntry[]> {
   const daoIds = await collectAll((c) => listDaos(c));
-  const out: DaoWithRoots[] = [];
-  for (const id of daoIds) {
-    const dao = await getDao(id);
+  const out: RootEntry[] = [];
+  for (const daoId of daoIds) {
+    const dao = await getDao(daoId);
     if (!dao) continue;
-    const rootIds = await collectAll((c) => listRootsByDao(id, c));
-    const roots: { id: bigint; root: RootProposal }[] = [];
+    const rootIds = await collectAll((c) => listRootsByDao(daoId, c));
     for (const rid of rootIds) {
-      const root = await getRootProposal(rid);
-      if (root) roots.push({ id: rid, root });
+      const tree = await buildRootTree(rid);
+      if (tree) out.push({ daoId, dao, tree });
     }
-    out.push({ id, dao, roots });
   }
   return out;
 }
 
+function HeroBranch() {
+  return (
+    <svg
+      className="hero-branch"
+      width="220"
+      height="86"
+      viewBox="0 0 220 86"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="M8 6 V80" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M8 24 H70 Q92 24 92 46 V60"
+        stroke="var(--coral)"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M8 44 H150 Q172 44 172 66 V78"
+        stroke="var(--coral)"
+        strokeWidth="1.5"
+        opacity="0.7"
+      />
+      <path d="M8 62 H54" stroke="var(--coral)" strokeWidth="1.5" opacity="0.5" />
+      <circle cx="8" cy="6" r="3" fill="var(--blue)" />
+      <circle cx="92" cy="61" r="3" fill="var(--coral)" />
+      <circle cx="172" cy="79" r="3" fill="var(--coral)" opacity="0.7" />
+      <circle cx="56" cy="62" r="2.4" fill="var(--coral)" opacity="0.5" />
+      <circle cx="8" cy="80" r="3" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function Explorer() {
-  const reg = useAsync(loadRegistry, []);
+  const trees = useAsync(loadTrees, []);
   const consts = useAsync(getConstants, []);
 
-  const totalRoots = useMemo(
-    () => (reg.data ?? []).reduce((n, d) => n + d.roots.length, 0),
-    [reg.data],
+  const totalForks = (trees.data ?? []).reduce(
+    (n, e) => n + (e.tree.children.length ? countDescendants(e.tree) : 0),
+    0,
   );
 
   return (
-    <div className="stack">
-      <Card
-        title="Registry"
-        actions={
-          <button className="small" onClick={reg.refresh} disabled={reg.loading}>
-            {reg.loading ? "Refreshing…" : "Refresh"}
-          </button>
-        }
-      >
-        <p className="muted" style={{ marginTop: 0 }}>
-          Every DAO, root proposal and semantic-descendant fork recorded on the
-          production contract. Read directly from GenLayer StudioNet — no wallet
-          required.
+    <div className="stack-lg">
+      <section className="hero">
+        <p className="eyebrow">Governance Fork</p>
+        <h1 className="display">
+          Governance doesn't have to end at <span className="em">yes</span> or{" "}
+          <span className="em">no</span>.
+        </h1>
+        <p className="lede">
+          Explore real governance proposals and the alternatives communities
+          built from them — each one adjudicated on GenLayer for whether it stays
+          faithful to the original intent.
         </p>
+        <HeroBranch />
+      </section>
 
-        {consts.data && (
-          <div className="chips" style={{ marginBottom: 12 }}>
-            <span className="badge neutral">
-              envelope bond {formatGen(consts.data.envelope_bond)}
-            </span>
-            <span className="badge neutral">
-              fork bond {formatGen(consts.data.fork_creation_bond)}
-            </span>
-            <span className="badge neutral">
-              challenge bond {formatGen(consts.data.challenge_bond)}
-            </span>
-            <span className="badge neutral">
-              flip reward {formatGen(consts.data.challenger_flip_reward)}
-            </span>
-            <span className="badge neutral">
-              treasury pool {formatGen(consts.data.treasury_pool)}
-            </span>
-            <span
-              className={`badge ${consts.data.paused ? "bad" : "ok"}`}
-              title="Contract pause switch"
-            >
-              {consts.data.paused ? "PAUSED" : "active"}
-            </span>
-          </div>
-        )}
-
-        {reg.loading && (
-          <div className="row">
-            <Spinner /> <span className="muted">Loading registry…</span>
-          </div>
-        )}
-        {reg.error && <div className="notice bad">{reg.error}</div>}
-        {reg.data && (
-          <div className="tiny muted">
-            {reg.data.length} DAO{reg.data.length === 1 ? "" : "s"} · {totalRoots}{" "}
-            root proposal{totalRoots === 1 ? "" : "s"}
-          </div>
-        )}
-      </Card>
-
-      {(reg.data ?? []).map((d) => (
-        <Card
-          key={d.id.toString()}
-          title={
+      <div className="count-strip">
+        {consts.data ? (
+          <>
             <span>
-              {d.dao.name}{" "}
-              <span className="faint tiny">DAO #{d.id.toString()}</span>
+              <b>{(trees.data ?? []).length}</b> root proposal
+              {(trees.data ?? []).length === 1 ? "" : "s"}
             </span>
-          }
-        >
-          <div className="tiny muted" style={{ marginBottom: 10 }}>
-            <a href={d.dao.url} target="_blank" rel="noreferrer">
-              {d.dao.url}
-            </a>
-          </div>
-          {d.roots.length === 0 ? (
-            <Empty>No root proposals imported for this DAO yet.</Empty>
-          ) : (
-            <div className="list">
-              {d.roots.map(({ id, root }) => (
-                <button
-                  key={id.toString()}
-                  className="list-item"
-                  onClick={() => navigate({ name: "root", id })}
-                >
-                  <div className="grow">
-                    <div className="primary-line">{root.title}</div>
-                    <div className="tiny faint">
-                      root #{id.toString()} · {root.external_proposal_id} ·{" "}
-                      {root.identity_status}
-                    </div>
-                  </div>
-                  <StatusBadge value={root.envelope_status} />
-                </button>
-              ))}
-            </div>
-          )}
-        </Card>
-      ))}
+            <span>
+              <b>{totalForks}</b> fork{totalForks === 1 ? "" : "s"}
+            </span>
+            <span>
+              envelope bond <b>{formatGen(consts.data.envelope_bond)}</b>
+            </span>
+            <span>
+              fork bond <b>{formatGen(consts.data.fork_creation_bond)}</b>
+            </span>
+            <span>
+              challenge bond <b>{formatGen(consts.data.challenge_bond)}</b>
+            </span>
+            <span>
+              treasury pool <b>{formatGen(consts.data.treasury_pool)}</b>
+            </span>
+            {consts.data.paused && <span style={{ color: "var(--red-ink)" }}>PAUSED</span>}
+          </>
+        ) : (
+          <span className="faint">reading contract…</span>
+        )}
+      </div>
 
-      {reg.data && reg.data.length === 0 && (
-        <Card>
-          <Empty>
-            No DAOs registered yet. Switch to <strong>Build</strong> to import
-            the first governance proposal.
-          </Empty>
-        </Card>
-      )}
+      <div className="section">
+        <SectionHead
+          eyebrow="Registry"
+          title="Proposal lineage"
+          right={
+            <button
+              className="small"
+              onClick={trees.refresh}
+              disabled={trees.loading}
+            >
+              {trees.loading ? "Reading…" : "Refresh"}
+            </button>
+          }
+        />
+
+        {trees.loading && !trees.data && (
+          <div className="row muted">
+            <Spinner /> Walking the tree from StudioNet…
+          </div>
+        )}
+        {trees.error && <div className="note red">{trees.error}</div>}
+
+        {trees.data && trees.data.length === 0 && (
+          <div className="panel-inset">
+            <div className="row" style={{ gap: 14 }}>
+              <Mark size={26} />
+              <div>
+                <div style={{ fontWeight: 550 }}>Nothing imported yet.</div>
+                <div className="muted tiny">
+                  Import the first governance proposal from the{" "}
+                  <button className="link" onClick={() => navigate({ name: "build" })}>
+                    Build
+                  </button>{" "}
+                  tab.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="stack-lg">
+          {(trees.data ?? []).map((e) => (
+            <div key={e.tree.id.toString()}>
+              <div
+                className="between"
+                style={{ marginBottom: 12, alignItems: "baseline" }}
+              >
+                <span className="eyebrow">
+                  {e.dao.name} · DAO {e.daoId.toString()}
+                </span>
+                <a
+                  className="tiny mono faint"
+                  href={e.dao.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {e.dao.url}
+                </a>
+              </div>
+              <LineageTree root={e.tree} />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
+}
+
+function countDescendants(node: TreeNode): number {
+  return node.children.length + node.children.reduce((n, c) => n + countDescendants(c), 0);
 }

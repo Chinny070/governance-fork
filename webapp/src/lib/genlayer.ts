@@ -123,7 +123,15 @@ export async function view<T>(
   throw lastErr;
 }
 
-/** A view that returns `undefined` instead of throwing on "not found". */
+/**
+ * A view that returns `undefined` for a "does not exist" result.
+ *
+ * On StudioNet a contract `gl.vm.UserError("… not found")` raised inside a
+ * read is surfaced by genlayer-js/viem as a generic "execution failed /
+ * Missing or invalid parameters" message rather than the original text — so
+ * we treat both shapes as "not found". `viewOpt` is only used for
+ * single-entity `get_*` reads, where not-found is the only expected error.
+ */
 export async function viewOpt<T>(
   functionName: string,
   args: unknown[] = [],
@@ -132,7 +140,14 @@ export async function viewOpt<T>(
     return await view<T>(functionName, args);
   } catch (e) {
     const s = String((e as Error)?.message ?? e).toLowerCase();
-    if (s.includes("not found")) return undefined;
+    if (
+      s.includes("not found") ||
+      s.includes("execution failed") ||
+      s.includes("missing or invalid parameters") ||
+      s.includes("does not exist")
+    ) {
+      return undefined;
+    }
     throw e;
   }
 }

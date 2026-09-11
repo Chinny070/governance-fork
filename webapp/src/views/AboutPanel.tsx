@@ -10,43 +10,75 @@ import { getConstants } from "../lib/api";
 import { formatGen, shortAddr } from "../lib/format";
 import { navigate } from "../lib/router";
 import { useAsync } from "../lib/useAsync";
-import { Badge, Card, KV, Row } from "../components/ui";
+import { DL, Row, SectionHead, Tag } from "../components/ui";
+import { Mark } from "../components/Logo";
 
-const STEPS = [
-  ["DAO", "register_dao — name the governance body"],
-  ["Root proposal", "import_root_proposal — the authoritative proposal + params"],
-  ["Bond lock", 'lock_bond("ENVELOPE") — 0.1 GEN, the only payable call'],
-  ["Intent envelope", "submit_root_envelope — objective, scope, constraints, mutable/immutable dimensions, evidence"],
-  ["Evidence", "close_evidence → fetch_evidence (real gl.nondet.web.render, one item per tx) → seal_evidence"],
-  ["Adjudication", "adjudicate (arm) → run_adjudication (semantic consensus, eq_principle.prompt_comparative)"],
-  ["Verdict", "FAITHFUL / NOT_FAITHFUL / UNCLEAR / INVALID with per-dimension findings"],
-  ["Challenge", 'lock_bond("CHALLENGE") → challenge_verdict — assert a specific dimension is wrong, trigger re-adjudication'],
-  ["Finality", "finalize — owner-gated, force-finality once the challenge budget is spent"],
-  ["Bond settlement", "settle_bond — deterministic disposition; refund + slash == amount; flip reward from the pool"],
-  ["Fork", 'lock_bond("FORK_CREATION") → create_fork — a semantic descendant that keeps the intent and declares its delta'],
-  ["Proposal tree", "every fork runs the same pipeline; a fork is forkable only once finalized FAITHFUL"],
+const FLOW: [string, string, "" | "accent" | "fork"][] = [
+  ["Proposal", "A DAO imports a real governance proposal + its authoritative URL", ""],
+  ["Intent", "The proposer states objective, scope, constraints, mutable vs immutable dimensions", ""],
+  ["Evidence", "Community web pages fetched on-chain with gl.nondet.web.render, then frozen", ""],
+  ["GenLayer adjudication", "Validators reach semantic consensus: does this faithfully represent the intent?", "accent"],
+  ["Fork", "Anyone builds an alternative that keeps the intent and declares its delta", "fork"],
+  ["Challenge", "Assert a dimension is wrong → re-adjudication, not a vote", "fork"],
+  ["Finality", "The proposal or fork freezes with a provable, bonded verdict", ""],
 ];
+
+function ForkDiagram() {
+  return (
+    <svg
+      width="320"
+      height="150"
+      viewBox="0 0 320 150"
+      fill="none"
+      aria-hidden="true"
+      style={{ maxWidth: "100%" }}
+    >
+      <text x="0" y="14" fontFamily="var(--mono)" fontSize="10" fill="var(--ink-3)">
+        YES / NO
+      </text>
+      <line x1="16" y1="28" x2="16" y2="120" stroke="var(--line-3)" strokeWidth="1.5" />
+      <circle cx="16" cy="28" r="3.5" fill="var(--ink-2)" />
+      <text x="30" y="46" fontFamily="var(--mono)" fontSize="10" fill="var(--ink-4)">
+        pass
+      </text>
+      <text x="30" y="112" fontFamily="var(--mono)" fontSize="10" fill="var(--ink-4)">
+        reject
+      </text>
+      <circle cx="16" cy="120" r="3.5" fill="var(--ink-4)" />
+
+      <text x="150" y="14" fontFamily="var(--mono)" fontSize="10" fill="var(--ink-3)">
+        GOVERNANCE FORK
+      </text>
+      <line x1="166" y1="28" x2="166" y2="130" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="166" cy="28" r="3.5" fill="var(--blue)" />
+      <path d="M166 54 H222 Q238 54 238 70 V84" stroke="var(--coral)" strokeWidth="1.5" />
+      <circle cx="238" cy="86" r="3.5" fill="var(--coral)" />
+      <path d="M166 82 H210" stroke="var(--coral)" strokeWidth="1.5" opacity="0.7" />
+      <circle cx="212" cy="82" r="3" fill="var(--coral)" opacity="0.7" />
+      <path d="M238 100 H286 Q300 100 300 114 V124" stroke="var(--coral)" strokeWidth="1.5" opacity="0.55" />
+      <circle cx="300" cy="126" r="3" fill="var(--coral)" opacity="0.55" />
+      <circle cx="166" cy="130" r="3.5" fill="currentColor" />
+    </svg>
+  );
+}
 
 export function AboutPanel() {
   const consts = useAsync(getConstants, []);
 
   return (
-    <div className="stack">
-      <Card title="Governance Fork">
-        <p style={{ marginTop: 0, fontSize: 15 }}>
-          <strong>Don't vote YES or NO. Change the proposal.</strong>
+    <div className="stack-lg">
+      <section className="hero" style={{ marginBottom: 0 }}>
+        <p className="eyebrow">How it works</p>
+        <h1 className="display" style={{ maxWidth: "18ch" }}>
+          Disagreement should <span className="em">branch</span>, not just tally.
+        </h1>
+        <p className="lede">
+          Governance Fork replaces the up/down vote with a lineage of proposals.
+          Each version is judged by an on-chain LLM adjudication for whether it
+          stays faithful to the original intent — and every judgement can be
+          challenged into a re-adjudication.
         </p>
-        <p className="muted">
-          Governance Fork is a semantic-descendant DAO governance registry built
-          as a GenLayer Intelligent Contract. Instead of an up/down vote, a
-          participant creates a <em>fork</em> of a proposal: a new version that
-          keeps the original intent and declares exactly what it changes. An
-          on-chain LLM adjudication (GenLayer's optimistic-democracy consensus)
-          decides whether each version faithfully represents its parent's
-          intent. Anyone can challenge a verdict; the challenge is re-adjudicated,
-          not counted as a vote.
-        </p>
-        <div className="row">
+        <div className="row" style={{ marginTop: 22 }}>
           <button className="primary" onClick={() => navigate({ name: "build" })}>
             Build a proposal
           </button>
@@ -54,10 +86,40 @@ export function AboutPanel() {
             Explore the registry
           </button>
         </div>
-      </Card>
+      </section>
 
-      <Card title="Production contract">
-        <KV>
+      <div className="section">
+        <SectionHead eyebrow="Mechanism" title="One proposal, many descendants" />
+        <div className="flow">
+          {FLOW.map(([k, d, kind], i) => (
+            <div key={k} style={{ width: "100%" }}>
+              <div className={`step ${kind}`}>
+                <span className="mk" />
+                <span className="k">{k}</span>
+                <span className="d">{d}</span>
+              </div>
+              {i < FLOW.length - 1 && <div className="pipe" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="section">
+        <SectionHead eyebrow="Why" title="Not yes / no" />
+        <div className="row" style={{ gap: 40, alignItems: "flex-start" }}>
+          <ForkDiagram />
+          <p className="muted" style={{ maxWidth: "38ch" }}>
+            A vote collapses a rich proposal into one bit. A fork keeps it
+            editable: the objection becomes a concrete alternative, the
+            alternative is adjudicated for faithfulness, and the result is a tree
+            you can inspect — not a number.
+          </p>
+        </div>
+      </div>
+
+      <div className="section">
+        <SectionHead eyebrow="Contract" title="Production deployment" />
+        <DL>
           <Row k="Address">
             <a
               className="mono"
@@ -69,35 +131,31 @@ export function AboutPanel() {
             </a>
           </Row>
           <Row k="Network">
-            GenLayer StudioNet · chain {STUDIONET.chainIdDec} (
-            {STUDIONET.chainIdHex})
+            GenLayer StudioNet · chain {STUDIONET.chainIdDec} ({STUDIONET.chainIdHex})
           </Row>
           <Row k="RPC">{STUDIONET.rpcUrl}</Row>
-          <Row k="Source commit">{CONTRACT_SOURCE_COMMIT}</Row>
-          <Row k="Source SHA-256">
+          <Row k="Source">
+            commit {CONTRACT_SOURCE_COMMIT} · 16 write + 17 view + 2 admin
+          </Row>
+          <Row k="SHA-256">
             <span className="mono tiny">{CONTRACT_SOURCE_SHA256}</span>
           </Row>
-          <Row k="ABI">16 write + 17 view + 2 admin (35 methods)</Row>
           {consts.data && (
             <>
               <Row k="Treasury admin">
-                <span className="mono" title={consts.data.treasury_addr}>
-                  {shortAddr(consts.data.treasury_addr, 6)}
-                </span>
+                <span className="mono">{shortAddr(consts.data.treasury_addr, 6)}</span>
               </Row>
-              <Row k="Treasury pool">
-                {formatGen(consts.data.treasury_pool)}
-              </Row>
+              <Row k="Treasury pool">{formatGen(consts.data.treasury_pool)}</Row>
               <Row k="Bonds">
                 envelope {formatGen(consts.data.envelope_bond)} · fork{" "}
                 {formatGen(consts.data.fork_creation_bond)} · challenge{" "}
                 {formatGen(consts.data.challenge_bond)} · flip reward{" "}
                 {formatGen(consts.data.challenger_flip_reward)}
               </Row>
-              <Row k="Contract state">
-                <Badge tone={consts.data.paused ? "bad" : "ok"}>
+              <Row k="State">
+                <Tag tone={consts.data.paused ? "red" : "green"} dot>
                   {consts.data.paused ? "PAUSED" : "active"}
-                </Badge>
+                </Tag>
               </Row>
             </>
           )}
@@ -106,30 +164,17 @@ export function AboutPanel() {
               {REPO_URL}
             </a>
           </Row>
-        </KV>
-      </Card>
+        </DL>
+      </div>
 
-      <Card title="Full lifecycle">
-        <div className="list">
-          {STEPS.map(([name, detail], i) => (
-            <div className="list-item" key={i} style={{ cursor: "default" }}>
-              <span className="badge neutral">{i + 1}</span>
-              <div className="grow">
-                <div className="primary-line">{name}</div>
-                <div className="tiny faint mono">{detail}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <Card title="Runtime notes">
-        <ul className="muted" style={{ marginTop: 0 }}>
+      <div className="section">
+        <SectionHead eyebrow="Runtime" title="Notes" />
+        <ul className="muted" style={{ marginTop: 0, paddingLeft: 18 }}>
           <li>
             <strong>Undetermined:</strong> a semantic transaction with no
-            validator consensus commits zero state. The UI surfaces this
-            distinctly from a contract rejection — re-arm and run again (3
-            retries, then a deterministic UNCLEAR terminal).
+            validator consensus commits zero state. The UI shows this distinctly
+            from a contract rejection — re-arm and run again (3 retries, then a
+            deterministic UNCLEAR terminal).
           </li>
           <li>
             <strong>Payable safety:</strong> on this runtime a reverted payable
@@ -142,13 +187,17 @@ export function AboutPanel() {
             actions, not timestamps.
           </li>
           <li>
-            <strong>StudioNet payout note:</strong> contract-side GEN accounting
-            (capture into balance, deduction on settlement, treasury pool) is
-            exact and on-chain. The final EOA credit of a refund is a documented
+            <strong>StudioNet payout:</strong> contract-side GEN accounting is
+            exact and on-chain; the final EOA credit of a refund is a documented
             StudioNet simulation gap that lands on a full chain layer.
           </li>
         </ul>
-      </Card>
+      </div>
+
+      <div className="row faint tiny" style={{ gap: 10 }}>
+        <Mark size={16} branchColor="var(--ink-3)" />
+        Governance Fork
+      </div>
     </div>
   );
 }

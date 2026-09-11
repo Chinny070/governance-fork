@@ -19,27 +19,24 @@ export function ArrayInput({
   const set = (i: number, v: string) => {
     const next = [...rows];
     next[i] = v;
-    onChange(next.filter((x, idx) => x !== "" || idx < next.length));
+    onChange(next);
   };
   const add = () => onChange([...values, ""]);
   const remove = (i: number) => onChange(values.filter((_, idx) => idx !== i));
+  const filled = values.filter((v) => v.trim()).length;
 
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div className="field">
       <label>
         {label}{" "}
-        <span className="faint tiny">
-          ({values.filter((v) => v.trim()).length}
-          {max ? ` / ${max}` : ""})
+        <span className="faint">
+          {filled}
+          {max ? ` / ${max}` : ""}
         </span>
       </label>
-      {hint && (
-        <div className="faint tiny" style={{ marginBottom: 6 }}>
-          {hint}
-        </div>
-      )}
+      {hint && <div className="field-help" style={{ marginTop: -2, marginBottom: 6 }}>{hint}</div>}
       {rows.map((v, i) => (
-        <div className="array-input-row" key={i}>
+        <div className="arr-row" key={i}>
           <input
             value={v}
             placeholder={placeholder}
