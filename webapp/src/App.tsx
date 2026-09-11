@@ -1,6 +1,6 @@
 import { WalletProvider } from "./lib/wallet";
 import { useRoute, navigate, type Route } from "./lib/router";
-import { Header } from "./components/Header";
+import { Header, WalletNotice } from "./components/Header";
 import { Explorer } from "./views/Explorer";
 import { ProposalWorkspace } from "./views/ProposalWorkspace";
 import { BuildFlow } from "./views/BuildFlow";
@@ -37,6 +37,7 @@ export default function App() {
     <WalletProvider>
       <Header tab={activeTab(route)} />
       <div className="wrap page">
+        <WalletNotice />
         <Body route={route} />
 
         <footer className="footer">

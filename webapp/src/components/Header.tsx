@@ -4,6 +4,7 @@ import { shortAddr } from "../lib/format";
 import { navigate, type Route } from "../lib/router";
 import { useWallet } from "../lib/wallet";
 import { Brand } from "./Logo";
+import { Note } from "./ui";
 
 const TABS: { name: Route["name"]; label: string }[] = [
   { name: "explore", label: "Explore" },
@@ -49,6 +50,39 @@ function WalletControl({ compact }: { compact?: boolean }) {
       </button>
     </span>
   );
+}
+
+/**
+ * Proactive banner (distinct from Guarded's per-action gate): tells a
+ * visitor with no wallet that read-only exploration works anyway, or
+ * nudges a connected-but-wrong-network wallet to switch. Renders once,
+ * globally, under the header.
+ */
+export function WalletNotice() {
+  const w = useWallet();
+  const body = w.error ? (
+    <Note tone="red">{w.error}</Note>
+  ) : !w.hasProvider ? (
+    <Note tone="blue">
+      No browser wallet detected — everything here works read-only. To submit
+      transactions, install{" "}
+      <a href="https://metamask.io" target="_blank" rel="noreferrer">
+        MetaMask
+      </a>{" "}
+      and add GenLayer StudioNet.
+    </Note>
+  ) : w.account && !w.onStudionet ? (
+    <Note tone="coral">
+      Your wallet is on chain <code>{w.chainId ?? "?"}</code>. Governance Fork
+      runs on GenLayer StudioNet (<code>0xf22f</code> / 61999).{" "}
+      <button className="small" onClick={w.switchNetwork}>
+        Switch / add network
+      </button>
+    </Note>
+  ) : null;
+
+  if (!body) return null;
+  return <div style={{ marginBottom: 24 }}>{body}</div>;
 }
 
 export function Header({ tab }: { tab: Route["name"] }) {
