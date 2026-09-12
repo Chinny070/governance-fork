@@ -266,27 +266,65 @@ class ChallengeLifecycleTests(unittest.TestCase):
 # ===========================================================================
 
 class FinalizeTests(unittest.TestCase):
-    def test_finalize_needs_verdict(self):
+    # Stage 10 (steward-requested): finalize() is now a two-step commit --
+    # open_finality_window() (owner-gated, same forced-finality escape the
+    # original single-step finalize had) then finalize() (permissionless,
+    # requires the window already open). The preconditions that used to
+    # live in finalize() (verdict exists, no open challenge, owner-or-
+    # forced-finality) now gate open_finality_window() instead, since
+    # that's the step where they're still meaningfully reachable.
+
+    def test_open_window_needs_verdict(self):
         c, rid, case_id, eids = s7._seal_root()
         c.adjudicate(case_id)
         with self.assertRaises(UserError):
-            c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+            c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
 
-    def test_finalize_blocked_by_open_challenge(self):
+    def test_open_window_blocked_by_open_challenge(self):
         c, rid, case_id, eids = _root_with_verdict()
         c.challenge_verdict(rid, gf.TARGET_KIND_ROOT_ENVELOPE,
                             gf.CG_RE_SCOPE_MISCHARACTERIZED, "pending")
         with self.assertRaises(UserError):
-            c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+            c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
 
-    def test_finalize_requires_owner(self):
+    def test_open_window_requires_owner(self):
         c, rid, case_id, eids = _root_with_verdict()
         shim.set_sender(shim.Address("0x" + "99" * 20))
+        with self.assertRaises(UserError):
+            c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+
+    def test_finalize_without_open_window_rejected(self):
+        # The single-transaction race the steward flagged: finalize() can
+        # no longer run in the same breath as the verdict landing.
+        c, rid, case_id, eids = _root_with_verdict()
+        with self.assertRaises(UserError):
+            c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+
+    def test_double_open_window_rejected(self):
+        c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        with self.assertRaises(UserError):
+            c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+
+    def test_challenge_after_open_window_blocks_finalize(self):
+        # The actual fix: a challenge landing in the gap between
+        # open_finality_window and finalize must be seen and honoured.
+        c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        self.assertEqual(
+            c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_CHALLENGE_WINDOW
+        )
+        c.challenge_verdict(rid, gf.TARGET_KIND_ROOT_ENVELOPE,
+                            gf.CG_RE_SCOPE_MISCHARACTERIZED, "caught it")
+        self.assertEqual(
+            c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_CHALLENGE_OPEN
+        )
         with self.assertRaises(UserError):
             c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
 
     def test_finalize_faithful_root_then_forkable(self):
         c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_FAITHFUL)
         r = c.get_root_proposal(rid)
@@ -304,17 +342,22 @@ class FinalizeTests(unittest.TestCase):
             {gf.FORK_DIM_UNDECLARED_SEMANTIC_CHANGE: gf.FINDING_NOT_SATISFIED}
         )
         shim.set_sender(creator)
+        c.open_finality_window(fid, gf.TARGET_KIND_FORK)
         c.finalize(fid, gf.TARGET_KIND_FORK)
         self.assertEqual(c.get_fork(fid).status, gf.FORK_FINALIZED_NOT_FAITHFUL)
 
     def test_double_finalize_rejected(self):
         c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         with self.assertRaises(UserError):
             c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        with self.assertRaises(UserError):
+            c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
 
     def test_finalized_root_not_challengeable(self):
         c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         with self.assertRaises(UserError):
             c.challenge_verdict(rid, gf.TARGET_KIND_ROOT_ENVELOPE,
@@ -330,14 +373,17 @@ class FinalizeTests(unittest.TestCase):
             shim.get_mock_semantic().set_default(_mk_root_output(ch_case))
             c.run_adjudication(ch_case)
             shim.get_mock_semantic().reset()
-        # non-owner can now force finality
+        # non-owner can now force the finality window open, then anyone
+        # (permissionless) may finalize.
         shim.set_sender(shim.Address("0x" + "42" * 20))
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_FAITHFUL)
 
     def test_finalized_fork_child_eligibility(self):
         c, rid, fid, case_id, creator, eids = _fork_with_verdict()
         shim.set_sender(creator)
+        c.open_finality_window(fid, gf.TARGET_KIND_FORK)
         c.finalize(fid, gf.TARGET_KIND_FORK)
         self.assertEqual(c.get_fork(fid).status, gf.FORK_FINALIZED_FAITHFUL)
         parent = c.get_fork(fid)

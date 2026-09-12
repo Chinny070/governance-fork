@@ -263,13 +263,14 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 16  # Stage 6b: +close_evidence, +fetch_evidence,
+    expected_write = 17  # Stage 6b: +close_evidence, +fetch_evidence,
                          # +seal_evidence, +abort_case, -freeze_evidence,
                          # -freeze_case (11 - 2 + 4 = 13).
                          # Stage 7: +run_adjudication (-> 14).
                          # Stage 9: +withdraw_treasury +lock_bond (-> 16);
                          # submit_root_envelope / create_fork /
                          # challenge_verdict lose .payable (count unchanged).
+                         # Stage 10: +open_finality_window (-> 17).
     expected_view = 17   # Stage 9: +list_bonds_by_target (16 -> 17).
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin

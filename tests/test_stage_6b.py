@@ -1010,11 +1010,13 @@ class CommunityGriefingTests(unittest.TestCase):
         with self.assertRaises(RenderFailure):
             c.fetch_evidence(eid)
         c.abort_case(case_id)
-        # Unrelated root/case still fully functional.
-        c2, did2, rid2, case_id2 = _fresh_root_case(urls=("https://z/1",))
+        # Unrelated root/case still fully functional. Its evidence must
+        # include its own canonical proposal_url ("https://x/1", set by
+        # _fresh_root_case) to be sealable (Stage 10).
+        c2, did2, rid2, case_id2 = _fresh_root_case(urls=("https://x/1",))
         c2.close_evidence(case_id2)
         eid2 = list(c2.evidence_by_case[case_id2])[0]
-        shim.get_mock_web().set_response("https://z/1", "totally separate, working content")
+        shim.get_mock_web().set_response("https://x/1", "totally separate, working content")
         c2.fetch_evidence(eid2)
         c2.seal_evidence(case_id2)
         self.assertEqual(c2.get_case(case_id2).state, gf.CASE_CASE_FROZEN)
@@ -1257,7 +1259,12 @@ class RootForkParityTests(unittest.TestCase):
             c.get_evidence(canonical_eid).content_fingerprint,
         )
 
-    def test_root_web_content_fingerprint_stays_empty_if_no_matching_evidence(self):
+    def test_root_seal_rejected_without_canonical_source_evidence(self):
+        # Stage 10 (steward-requested): a root envelope used to be sealable
+        # -- and therefore adjudicatable -- without ever including its own
+        # canonical proposal source as evidence (web_content_fingerprint
+        # just stayed empty). Now the canonical URL must be present, or
+        # seal itself is rejected.
         c = _fresh()
         did = c.register_dao("A", "https://a")
         rid = c.import_root_proposal(
@@ -1271,7 +1278,8 @@ class RootForkParityTests(unittest.TestCase):
             "https://unrelated.example.com/x", "unrelated evidence content here, long enough"
         )
         c.fetch_evidence(eid)
-        c.seal_evidence(case_id)
+        with self.assertRaises(UserError):
+            c.seal_evidence(case_id)
         self.assertEqual(c.get_root_proposal(rid).web_content_fingerprint, b"")
 
     def test_root_web_content_fingerprint_never_derived_from_unusable_short(self):

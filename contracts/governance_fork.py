@@ -209,6 +209,11 @@ ENVELOPE_ADJUDICATING = "ENVELOPE_ADJUDICATING"
 # FORK_CHALLENGE_OPEN. The envelope returns to ENVELOPE_ADJUDICATING once
 # the challenge resolves; finalize() moves it to a terminal status.
 ENVELOPE_CHALLENGE_OPEN = "ENVELOPE_CHALLENGE_OPEN"
+# Stage 10 (steward-requested): a decisive verdict exists and the owner has
+# called open_finality_window(), but finalize() has not yet run. Mirrors
+# FORK_CHALLENGE_WINDOW below -- see open_finality_window()'s docstring for
+# why this two-step split exists.
+ENVELOPE_CHALLENGE_WINDOW = "ENVELOPE_CHALLENGE_WINDOW"
 ENVELOPE_FAITHFUL = "ENVELOPE_FAITHFUL"
 ENVELOPE_REJECTED = "ENVELOPE_REJECTED"
 ENVELOPE_UNCLEAR = "ENVELOPE_UNCLEAR"
@@ -220,6 +225,13 @@ FORK_EVIDENCE_FROZEN = "EVIDENCE_FROZEN"
 FORK_CASE_FROZEN = "CASE_FROZEN"
 FORK_ADJUDICATING = "ADJUDICATING"
 FORK_VERDICT_PROPOSED = "VERDICT_PROPOSED"
+# Stage 10 (steward-requested): declared in Stage 2 but never wired up --
+# the original design's true time-boxed challenge window collapsed to a
+# single owner-gated finalize() call once Stage 7/8 confirmed this runtime
+# exposes no block-time source. open_finality_window() (Stage 10) now uses
+# this exact status for its real purpose: a decisive verdict exists and the
+# owner has signalled intent to finalize, but finalize() itself has not run
+# yet -- so a challenge submitted in that gap is guaranteed to be seen.
 FORK_CHALLENGE_WINDOW = "CHALLENGE_WINDOW"
 FORK_CHALLENGE_OPEN = "CHALLENGE_OPEN"
 FORK_FINALIZED_FAITHFUL = "FINALIZED_FAITHFUL"
@@ -1106,9 +1118,11 @@ def _render_challenge_block(ground_code, argument):
     )
 
 
-def _root_subject_block(root, envelope) -> str:
+def _intent_lines(root, envelope) -> list:
+    # The complete canonical root intent, factored out so fork adjudication
+    # (Stage 10 (steward-requested)) can embed it verbatim alongside a
+    # fork's own subject, not just the root's flat structured_parameters.
     lines = []
-    lines.append("SUBJECT TYPE: ROOT INTENT ENVELOPE")
     lines.append(_adj_line("Proposal title", root.title))
     lines.append(_adj_line("Canonical proposal URL", root.proposal_url))
     lines.append(_adj_line("Objective", envelope.objective))
@@ -1130,6 +1144,12 @@ def _root_subject_block(root, envelope) -> str:
             "  - " + _neutralise_delims(kv.key).replace("\n", " ").replace("\r", " ")
             + " = " + _neutralise_delims(kv.value).replace("\n", " ").replace("\r", " ")
         )
+    return lines
+
+
+def _root_subject_block(root, envelope) -> str:
+    lines = ["SUBJECT TYPE: ROOT INTENT ENVELOPE"]
+    lines.extend(_intent_lines(root, envelope))
     return "\n".join(lines)
 
 
@@ -1143,15 +1163,30 @@ def _params_block(label, params) -> str:
     return "\n".join(lines)
 
 
-def _fork_subject_block(fork, parent_label, parent_params) -> str:
+def _fork_subject_block(fork, root, parent_label, parent_fork) -> str:
+    # Stage 10 (steward-requested): a fork used to be adjudicated against
+    # only its immediate parent's flat structured_parameters -- never the
+    # canonical root intent every descendant must preserve, and never the
+    # immediate parent's own complete body when that parent is itself a
+    # fork. Both are now included in full, so a fork three levels deep is
+    # judged against real accumulated context, not a thin parameter list.
     lines = []
     lines.append("SUBJECT TYPE: FORK")
+    lines.append("ROOT INTENT (must be preserved by every descendant fork):")
+    lines.extend(_intent_lines(root, root.envelope))
+    lines.append("IMMEDIATE PARENT: " + parent_label)
+    if parent_fork is None:
+        lines.append("  (the parent is the root proposal above -- see ROOT INTENT.)")
+    else:
+        lines.append(_adj_line("  Parent fork title", parent_fork.body.title))
+        lines.append(_adj_line("  Parent fork summary", parent_fork.body.summary))
+        lines.append(_adj_line("  Parent fork reasoning", parent_fork.body.reasoning))
+        lines.append(_params_block("  Parent fork structured parameters", parent_fork.body.structured_parameters))
     lines.append(_adj_line("Fork body title", fork.body.title))
     lines.append(_adj_line("Fork body summary", fork.body.summary))
     lines.append(_adj_line("Fork reasoning", fork.body.reasoning))
     lines.append(_params_block("Fork structured parameters", fork.body.structured_parameters))
-    lines.append(_params_block("Parent (" + parent_label + ") structured parameters", parent_params))
-    lines.append("Declared delta entries:")
+    lines.append("Declared delta entries (fork vs immediate parent):")
     for de in fork.delta:
         lines.append(
             "  - dimension=" + _neutralise_delims(de.dimension_name).replace("\n", " ").replace("\r", " ")
@@ -1910,6 +1945,15 @@ class Contract(gl.Contract):
         if root_id not in self.roots:
             raise gl.vm.UserError("root not found")
         root = self.roots[root_id]
+        # Stage 10 (steward-requested): bind envelope submission to the same
+        # account that imported the root. Previously ANY sender could submit
+        # the intent envelope for someone else's imported proposal -- the
+        # proposer role (which _case_owner uses to gate close_evidence /
+        # adjudicate / finalize) was fixed at import time, but envelope
+        # authorship was not, letting a third party frame someone else's
+        # proposal in whatever terms they chose.
+        if gl.message.sender_address != root.proposer:
+            raise gl.vm.UserError("only the importing proposer may submit this root's envelope")
         # One-active-envelope rule
         if root.envelope_status != ENVELOPE_NOT_SUBMITTED:
             raise gl.vm.UserError("envelope already active")
@@ -2752,6 +2796,25 @@ class Contract(gl.Contract):
             )
         elif case.case_type == CASE_TYPE_ROOT_ENVELOPE:
             root = self.roots[case.target_id]
+            # Stage 10 (steward-requested): require the canonical proposal
+            # source itself to be present, sealed evidence -- otherwise a
+            # root envelope could be adjudicated for faithfulness to a
+            # proposal whose actual source content was never verified
+            # on-chain. All ROOT_ENVELOPE evidence is "required" above, so
+            # by this point every item in case.evidence_ids is already
+            # confirmed RETRIEVAL_FETCHED; this only has to confirm the
+            # proposal's own URL is among them.
+            root_norm = _normalize_url(root.proposal_url)
+            source_ev = None
+            for eid in case.evidence_ids:
+                ev = self.evidence[eid]
+                if _normalize_url(ev.url) == root_norm:
+                    source_ev = ev
+                    break
+            if source_ev is None:
+                raise gl.vm.UserError(
+                    "the proposal's own source URL must be included as evidence"
+                )
             case_fp = _sha256(
                 _canonicalize_case_root_envelope(
                     int(case_id),
@@ -2764,35 +2827,26 @@ class Contract(gl.Contract):
                     evidence_set_fp,
                 )
             )
-            # Derive RootProposal.web_content_fingerprint from the frozen
-            # Evidence record whose URL matches the root's own canonical
-            # proposal_url, if the submitter included it as evidence and it
-            # was successfully (usefully) fetched. Never a duplicate fetch.
+            # source_ev is guaranteed present and RETRIEVAL_FETCHED (checked
+            # above), so this is now an unconditional derivation rather than
+            # the old best-effort loop.
             if root.web_content_fingerprint == b"":
-                root_norm = _normalize_url(root.proposal_url)
-                for eid in case.evidence_ids:
-                    ev = self.evidence[eid]
-                    if (
-                        ev.retrieval_status == RETRIEVAL_FETCHED
-                        and _normalize_url(ev.url) == root_norm
-                    ):
-                        self.roots[case.target_id] = RootProposal(
-                            dao_id=root.dao_id,
-                            external_proposal_id=root.external_proposal_id,
-                            title=root.title,
-                            proposal_url=root.proposal_url,
-                            proposer=root.proposer,
-                            import_fingerprint=root.import_fingerprint,
-                            web_content_fingerprint=ev.content_fingerprint,
-                            structured_parameters=root.structured_parameters,
-                            envelope=root.envelope,
-                            envelope_status=root.envelope_status,
-                            envelope_case_id=root.envelope_case_id,
-                            identity_status=root.identity_status,
-                            imported_at=root.imported_at,
-                            current_verdict_id=root.current_verdict_id,
-                        )
-                        break
+                self.roots[case.target_id] = RootProposal(
+                    dao_id=root.dao_id,
+                    external_proposal_id=root.external_proposal_id,
+                    title=root.title,
+                    proposal_url=root.proposal_url,
+                    proposer=root.proposer,
+                    import_fingerprint=root.import_fingerprint,
+                    web_content_fingerprint=source_ev.content_fingerprint,
+                    structured_parameters=root.structured_parameters,
+                    envelope=root.envelope,
+                    envelope_status=root.envelope_status,
+                    envelope_case_id=root.envelope_case_id,
+                    identity_status=root.identity_status,
+                    imported_at=root.imported_at,
+                    current_verdict_id=root.current_verdict_id,
+                )
         else:
             raise gl.vm.UserError("unsupported case_type for seal")
 
@@ -2958,13 +3012,19 @@ class Contract(gl.Contract):
             _root_subject_block(root, envelope), evidence_block,
         )
 
-    def _build_fork_prompt(self, case_id_int, case, fork, eligible_ids):
+    def _fork_parent_context(self, fork):
+        # Stage 10 (steward-requested): the root ancestor + the immediate
+        # parent's complete state (None when the parent IS the root -- see
+        # _fork_subject_block). Shared by _build_fork_prompt and
+        # _build_challenge_prompt so both send the model identical context.
+        root = self.roots[fork.root_id]
         if fork.parent_kind == PARENT_KIND_ROOT:
-            parent_params = self.roots[fork.parent_id].structured_parameters
-            parent_label = "root proposal " + str(int(fork.parent_id))
-        else:
-            parent_params = self.forks[fork.parent_id].body.structured_parameters
-            parent_label = "fork " + str(int(fork.parent_id))
+            return root, "root proposal " + str(int(fork.parent_id)), None
+        parent_fork = self.forks[fork.parent_id]
+        return root, "fork " + str(int(fork.parent_id)), parent_fork
+
+    def _build_fork_prompt(self, case_id_int, case, fork, eligible_ids):
+        root, parent_label, parent_fork = self._fork_parent_context(fork)
         n = len(eligible_ids)
         if n < 1:
             evidence_block = ""
@@ -2976,7 +3036,7 @@ class Contract(gl.Contract):
             evidence_block = "\n".join(blocks)
         return _assemble_prompt(
             ADJ_SCHEMA_FORK, case_id_int, _ADJ_TASK_FORK,
-            _fork_subject_block(fork, parent_label, parent_params), evidence_block,
+            _fork_subject_block(fork, root, parent_label, parent_fork), evidence_block,
         )
 
     def _render_eligible_block(self, eligible_ids):
@@ -3006,15 +3066,10 @@ class Contract(gl.Contract):
                 challenge_block,
             )
         fork = self.forks[case.target_id]
-        if fork.parent_kind == PARENT_KIND_ROOT:
-            parent_params = self.roots[fork.parent_id].structured_parameters
-            parent_label = "root proposal " + str(int(fork.parent_id))
-        else:
-            parent_params = self.forks[fork.parent_id].body.structured_parameters
-            parent_label = "fork " + str(int(fork.parent_id))
+        root, parent_label, parent_fork = self._fork_parent_context(fork)
         return _assemble_prompt(
             ADJ_SCHEMA_FORK, case_id_int, _ADJ_TASK_FORK,
-            _fork_subject_block(fork, parent_label, parent_params), evidence_block,
+            _fork_subject_block(fork, root, parent_label, parent_fork), evidence_block,
             challenge_block,
         )
 
@@ -3540,7 +3595,24 @@ class Contract(gl.Contract):
         return challenge_id
 
     @gl.public.write
-    def finalize(self, target_id: u256, target_kind: str) -> None:
+    def open_finality_window(self, target_id: u256, target_kind: str) -> None:
+        # Stage 10 (steward-requested): finalize() used to be a single
+        # owner-gated transaction that could run in the very next block
+        # after run_adjudication succeeded -- a challenger who wanted to
+        # contest the verdict had to win a race against the owner's own
+        # finalize call, with no guaranteed window to even see the verdict
+        # land first. This runtime exposes no block-time source (every
+        # timestamp is u256(0)), so a real wall-clock challenge period
+        # cannot be built -- but a two-step commit can still close the
+        # single-transaction race: this call is the owner's deterministic,
+        # auditable declaration of intent to finalize; finalize() itself
+        # now requires this to have already happened as a PRIOR, separate
+        # transaction, and re-validates no challenge is open at that later
+        # point. A challenge_verdict landing in the gap between these two
+        # calls unconditionally overwrites the target's status away from
+        # *_CHALLENGE_WINDOW (see challenge_verdict), so finalize() will
+        # see it and refuse. Same owner-gate and forced-finality escape as
+        # the original finalize() had.
         if self.paused:
             raise gl.vm.UserError("paused")
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
@@ -3550,6 +3622,7 @@ class Contract(gl.Contract):
             governing_vid = root.current_verdict_id
             owner = root.proposer
             final = self._envelope_is_final(root.envelope_status)
+            pending = root.envelope_status == ENVELOPE_CHALLENGE_WINDOW
         elif target_kind == TARGET_KIND_FORK:
             if target_id not in self.forks:
                 raise gl.vm.UserError("fork not found")
@@ -3557,20 +3630,64 @@ class Contract(gl.Contract):
             governing_vid = fork.current_verdict_id
             owner = fork.creator
             final = self._fork_is_final(fork.status)
+            pending = fork.status == FORK_CHALLENGE_WINDOW
         else:
             raise gl.vm.UserError("unknown target_kind")
 
         if final:
             raise gl.vm.UserError("target already finalized")
+        if pending:
+            raise gl.vm.UserError("finality window already open")
         if int(governing_vid) == 0 or governing_vid not in self.verdicts:
             raise gl.vm.UserError("no verdict to finalize")
         total, open_count = self._challenge_tally(target_kind, target_id)
         if open_count > 0:
             raise gl.vm.UserError("an open challenge must be resolved before finalize")
-        # Owner-gated, with a forced-finality escape once the challenge
-        # budget is spent (so an absent owner cannot brick the target).
         if gl.message.sender_address != owner and total < MAX_CHALLENGES_PER_TARGET:
-            raise gl.vm.UserError("only the target owner may finalize")
+            raise gl.vm.UserError("only the target owner may open the finality window")
+
+        if target_kind == TARGET_KIND_ROOT_ENVELOPE:
+            self._write_root(target_id, ENVELOPE_CHALLENGE_WINDOW, governing_vid)
+        else:
+            self._write_fork_status_verdict(target_id, FORK_CHALLENGE_WINDOW, governing_vid)
+
+    @gl.public.write
+    def finalize(self, target_id: u256, target_kind: str) -> None:
+        # Stage 10 (steward-requested): now requires open_finality_window()
+        # to have already run as a separate, prior transaction (see its
+        # docstring). Permissionless from here -- the owner's intent was
+        # already authenticated when they opened the window; anyone may
+        # execute the already-decided outcome, the same pattern
+        # seal_evidence already uses for a progress/exit operation.
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if target_kind == TARGET_KIND_ROOT_ENVELOPE:
+            if target_id not in self.roots:
+                raise gl.vm.UserError("root not found")
+            root = self.roots[target_id]
+            governing_vid = root.current_verdict_id
+            pending = root.envelope_status == ENVELOPE_CHALLENGE_WINDOW
+        elif target_kind == TARGET_KIND_FORK:
+            if target_id not in self.forks:
+                raise gl.vm.UserError("fork not found")
+            fork = self.forks[target_id]
+            governing_vid = fork.current_verdict_id
+            pending = fork.status == FORK_CHALLENGE_WINDOW
+        else:
+            raise gl.vm.UserError("unknown target_kind")
+
+        if not pending:
+            raise gl.vm.UserError("call open_finality_window first")
+        # Defense in depth: a challenge landing after open_finality_window
+        # already flips the target's status away from *_CHALLENGE_WINDOW
+        # (challenge_verdict writes *_CHALLENGE_OPEN unconditionally), so
+        # `pending` above would already be False and this is unreachable --
+        # kept explicit rather than assumed.
+        total, open_count = self._challenge_tally(target_kind, target_id)
+        if open_count > 0:
+            raise gl.vm.UserError("an open challenge must be resolved before finalize")
+        if int(governing_vid) == 0 or governing_vid not in self.verdicts:
+            raise gl.vm.UserError("no verdict to finalize")
 
         v = self.verdicts[governing_vid].verdict
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
