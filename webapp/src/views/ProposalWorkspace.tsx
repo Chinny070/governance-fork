@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { getActiveWriteClient as g } from "../lib/activeClient";
 import {
@@ -789,6 +789,21 @@ function ChallengeSection({
 
 /* --------------------------------------------------------- finality & bonds */
 
+function formatDuration(totalSeconds: bigint): string {
+  const s = totalSeconds < 0n ? 0n : totalSeconds;
+  const hours = s / 3600n;
+  const minutes = (s % 3600n) / 60n;
+  if (hours >= 24n) {
+    const days = hours / 24n;
+    const remHours = hours % 24n;
+    return remHours > 0n ? `${days}d ${remHours}h` : `${days}d`;
+  }
+  if (hours > 0n) {
+    return minutes > 0n ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return minutes > 0n ? `${minutes}m` : `${s}s`;
+}
+
 function FinalitySection({
   t,
   act,
@@ -803,7 +818,19 @@ function FinalitySection({
     t.status === ENVELOPE_STATUS.CHALLENGE_WINDOW ||
     t.status === FORK_STATUS.CHALLENGE_WINDOW;
   const canOpenWindow = hasVerdict && !t.isFinal && !pending && !t.openChallenge;
-  const canFinalize = pending && !t.openChallenge;
+
+  const consts = useAsync(api.getConstants, []);
+  const windowSeconds = BigInt(consts.data?.challenge_window_seconds ?? 259200);
+  const [nowSec, setNowSec] = useState(() => BigInt(Math.floor(Date.now() / 1000)));
+  useEffect(() => {
+    if (!pending) return;
+    const id = setInterval(() => setNowSec(BigInt(Math.floor(Date.now() / 1000))), 15000);
+    return () => clearInterval(id);
+  }, [pending]);
+  const elapsed = pending ? nowSec - t.finalityWindowOpenedAt : 0n;
+  const remaining = windowSeconds - elapsed;
+  const windowElapsed = remaining <= 0n;
+  const canFinalize = pending && !t.openChallenge && windowElapsed;
 
   return (
     <div className="section">
@@ -821,11 +848,19 @@ function FinalitySection({
         </Note>
       ) : pending ? (
         <>
-          <Note tone="coral">
-            The finality window is open — a decisive verdict exists and
-            finalize is ready to run. This is the challenge window: a
-            challenge submitted now will still be honored and will block
-            finalize until it's resolved.
+          <Note tone={windowElapsed ? "coral" : "neutral"}>
+            {windowElapsed ? (
+              <>
+                The {formatDuration(windowSeconds)} challenge window has
+                elapsed and finalize is ready to run. Anyone may execute it.
+              </>
+            ) : (
+              <>
+                Challenge window open — {formatDuration(remaining)} remaining
+                before finalize can run. A challenge submitted now will still
+                be honored and will block finalize until it's resolved.
+              </>
+            )}
           </Note>
           <Guarded>
             <button
@@ -836,7 +871,9 @@ function FinalitySection({
               title={
                 t.openChallenge
                   ? "Resolve the open challenge first"
-                  : "Anyone may execute finalize now"
+                  : windowElapsed
+                    ? "Anyone may execute finalize now"
+                    : `Wait ${formatDuration(remaining)} for the challenge window to elapse`
               }
             >
               Finalize {t.kind}
@@ -846,10 +883,12 @@ function FinalitySection({
       ) : (
         <>
           <p className="muted tiny" style={{ marginTop: 0 }}>
-            This runtime has no block-time source, so there's no wall-clock
-            challenge period — instead, finalizing is two transactions.
-            Opening the window is owner-gated; a challenge landing before you
-            finalize is guaranteed to be seen and will block it.
+            Finalizing is two transactions. Opening the window starts a real,
+            enforced {formatDuration(windowSeconds)} challenge window — timed
+            by the transaction's own on-chain timestamp, not a block count —
+            during which finalize cannot run. A challenge submitted at any
+            point in that window is guaranteed to be seen and will block
+            finalize until it's resolved.
           </p>
           <Guarded>
             <button
@@ -869,7 +908,7 @@ function FinalitySection({
               1 · Open finality window
             </button>
             <button className="small" disabled style={{ marginLeft: 8 }}>
-              2 · Finalize (after window opens)
+              2 · Finalize (after {formatDuration(windowSeconds)})
             </button>
           </Guarded>
         </>

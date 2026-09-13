@@ -183,8 +183,10 @@ export function AboutPanel() {
             action is non-payable and consumes a pre-locked bond.
           </li>
           <li>
-            <strong>No block time:</strong> challenge windows are owner-gated
-            actions, not timestamps.
+            <strong>Real challenge windows:</strong> finalizing is two
+            transactions — opening the window stamps the on-chain
+            transaction timestamp, and finalize enforces a real 72-hour
+            wait from that stamp before it will run.
           </li>
           <li>
             <strong>StudioNet payout:</strong> contract-side GEN accounting is

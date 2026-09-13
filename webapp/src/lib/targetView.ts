@@ -47,6 +47,7 @@ export interface TargetView {
   rootId: bigint;
   evidenceCaseId: bigint;
   currentVerdictId: bigint;
+  finalityWindowOpenedAt: bigint;
   case?: Case;
   evidence: { id: bigint; ev: Evidence }[];
   verdict?: VerdictRecord;
@@ -91,6 +92,7 @@ export async function loadTarget(
       rootId: id,
       evidenceCaseId: BigInt(root.envelope_case_id),
       currentVerdictId: BigInt(root.current_verdict_id),
+      finalityWindowOpenedAt: BigInt(root.finality_window_opened_at),
       isFinal: ENVELOPE_FINAL.has(root.envelope_status),
       isFaithfulFinal: root.envelope_status === "ENVELOPE_FAITHFUL",
     };
@@ -106,6 +108,7 @@ export async function loadTarget(
       rootId: BigInt(fork.root_id),
       evidenceCaseId: BigInt(fork.evidence_case_id),
       currentVerdictId: BigInt(fork.current_verdict_id),
+      finalityWindowOpenedAt: BigInt(fork.finality_window_opened_at),
       isFinal: FORK_FINAL.has(fork.status),
       isFaithfulFinal: fork.status === "FINALIZED_FAITHFUL",
     };

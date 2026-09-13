@@ -3,8 +3,9 @@
 Production dApp for the Governance Fork Intelligent Contract on GenLayer
 StudioNet.
 
-- **Contract:** `0x4ACb76E0517a3Ad2d19699486595291b0089b077` (StudioNet) — Stage
-  10 (steward-requested fixes), commit `91601b2`
+- **Contract:** `0xD5A1E3b2087d439C36571B50947ddD900741f143` (StudioNet) — Stage
+  10 (steward-requested fixes, including a real enforced-duration finality
+  challenge period), commit `019630d`
 - **Stack:** Vite 6 · React 18 · TypeScript (strict) · `genlayer-js` 1.1.8
 - **No backend.** Reads go straight to the StudioNet RPC; writes go through an
   injected wallet (MetaMask). Exploration works with no wallet at all.
@@ -43,15 +44,19 @@ const { bondId } = await lockBond(client, "ENVELOPE");   // payable, 0.1 GEN
 await submitRootEnvelope(client, bondId, { ... });        // non-payable
 ```
 
-### Finality is two transactions
+### Finality is two transactions, with a real enforced wait
 
-There's no block-time source on this runtime, so `finalize` can't be gated on
-a wall-clock challenge period. Instead it's split: `open_finality_window`
-(owner-gated) declares intent, then `finalize` (permissionless) executes it —
-a challenge landing in between is guaranteed to be seen and blocks finalize.
+`gl.message_raw["datetime"]` is a genuine, consensus-safe on-chain
+timestamp on this runtime (live-proven — see
+`docs/STAGE_10_STEWARD_FIXES.md` section 4). `open_finality_window`
+(owner-gated) stamps it; `finalize` (permissionless) refuses to run until
+a real 72 hours (`CHALLENGE_WINDOW_SECONDS`) have elapsed since that
+stamp — a challenge landing at any point in that window is guaranteed to
+be seen and blocks finalize.
 
 ```ts
 await openFinalityWindow(client, targetId, targetKind);
+// ... at least 72h later, on-chain time ...
 await finalize(client, targetId, targetKind);
 ```
 

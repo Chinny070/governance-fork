@@ -50,6 +50,7 @@ export interface RootProposal {
   identity_status: string;
   imported_at: bigint;
   current_verdict_id: bigint;
+  finality_window_opened_at: bigint;
 }
 
 export interface DeltaEntry {
@@ -84,6 +85,7 @@ export interface Fork {
   child_count: number;
   created_at: bigint;
   creator_bond_id: bigint;
+  finality_window_opened_at: bigint;
 }
 
 export interface Evidence {
