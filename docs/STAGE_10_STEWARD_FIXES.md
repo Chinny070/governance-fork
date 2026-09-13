@@ -77,6 +77,12 @@ retained case ownership for everything downstream.
 `gl.message.sender_address == root.proposer`, or reverts with `"only the
 importing proposer may submit this root's envelope"`.
 
+Tested directly: `tests/test_stage_3.py`,
+`test_only_importing_proposer_may_submit_envelope` — a different sender
+is rejected, then the actual importer succeeds normally. (Originally this
+fix was verified live only, not by a committed unit test — added
+afterward so all four fixes have actual test coverage, not just three.)
+
 ## 4. A real, enforced-duration challenge period
 
 **Revision history on this fix:** the first version shipped here claimed
@@ -199,12 +205,21 @@ preconditions and permission model changed.
   (renamed/rewritten from a test that asserted the old opportunistic
   behaviour) and one fixture URL corrected so an unrelated-case-liveness
   test still includes its own canonical source.
+- `tests/test_stage_3.py` — `test_only_importing_proposer_may_submit_envelope`
+  (fix #3): a non-proposer sender is rejected, the actual importer still
+  succeeds.
 - `tests/stage_2_checks.py` — ABI count updated to 17 write methods.
 - `tests/_genlayer_shim.py` — added a mock wall clock backing
   `gl.message_raw["datetime"]` (`advance_clock()` / `set_clock()`),
   reset alongside the native-GEN ledger on each fresh contract instance,
   modeling the live-proven behavior in section 4 above.
 
-400/400 local tests pass; `tests/stage_2_checks.py` reports 14/14 checks
+All four fixes now have both a committed automated test and live
+StudioNet verification (fix #1's live cross-check was impractical --
+depth-2 FAITHFUL adjudication needs governance-authoritative evidence no
+synthetic proposal can supply -- so it's proven deterministically instead;
+see `tests/test_stage_10.py`'s docstring).
+
+401/401 local tests pass; `tests/stage_2_checks.py` reports 14/14 checks
 passed (12 run locally, 2 marked environment-unavailable: genvm-lint and
 a live genlayer-studio schema-load, neither present in this sandbox).

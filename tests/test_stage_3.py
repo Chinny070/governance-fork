@@ -394,6 +394,21 @@ class IntentEnvelopeTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.submit_root_envelope(shim.u256(99), *_envelope_fields(), urls, cls, rel, auth, tm, rp)
 
+    def test_only_importing_proposer_may_submit_envelope(self):
+        # Stage 10 (steward-requested): envelope submission is bound to the
+        # same account that imported the root -- a third party may not
+        # frame someone else's imported proposal in their own terms.
+        c, did, rid = self._prep()
+        urls, cls, rel, auth, tm, rp = _evidence_bundle()
+        shim.set_sender("0x" + "bb" * 20)  # importer used the default "aa" sender
+        with self.assertRaises(UserError):
+            c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
+        shim.reset_message_context()
+        # The actual importer is unaffected and can still submit normally.
+        c.submit_root_envelope(rid, *_envelope_fields(), urls, cls, rel, auth, tm, rp)
+        r = c.get_root_proposal(rid)
+        self.assertEqual(r.envelope_status, gf.ENVELOPE_EVIDENCE_OPEN)
+
     def test_objective_bound_enforced(self):
         c, did, rid = self._prep()
         urls, cls, rel, auth, tm, rp = _evidence_bundle()
