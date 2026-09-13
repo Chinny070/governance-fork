@@ -31,8 +31,8 @@ describe("formatGen", () => {
 
 describe("address / hex helpers", () => {
   it("shortens addresses", () => {
-    expect(shortAddr("0xbA06003F2C254232E4D440B89425abc7Afd4c11A")).toBe(
-      "0xbA06…c11A",
+    expect(shortAddr("0x4ACb76E0517a3Ad2d19699486595291b0089b077")).toBe(
+      "0x4ACb…b077",
     );
     expect(shortAddr(null)).toBe("—");
   });
