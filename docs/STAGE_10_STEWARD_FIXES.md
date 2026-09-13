@@ -80,12 +80,47 @@ importing proposer may submit this root's envelope"`.
 ## 4. A real two-step finality commit
 
 **The constraint:** this pinned GenVM runtime has no block-time source —
-every timestamp is `u256(0)` (established live in Stage 6a/9 probes). A
-literal time-boxed challenge period cannot be built. The original
-single-transaction `finalize()` let an owner call it in the very next
-transaction after `run_adjudication` succeeded, so a would-be challenger
-had to win a race against the owner's own finalize call with no guaranteed
-window to even see the verdict land first.
+every timestamp is `u256(0)` (established live in Stage 6a/9 probes). That
+proves no wall-clock *time* is available, but not, by itself, that no
+block *number* or sequence counter is available either -- those are a
+different question. Rather than extend the earlier conclusion further
+than it was actually tested, `contracts/probe/block_time_probe.py` asked
+it directly, live: does `gl.block`, `gl.chain`, or any field on
+`gl.message` / `gl.vm` expose a block number, height, or sequence value?
+
+Deployed to StudioNet (`0x7594d3D29DabeB4ADd174809B939d4b85e70fB6b`),
+`probe()` returned:
+
+```
+gl.message.sender_address = Address("0x3A31...")
+gl.block.number    ERROR: AttributeError: module 'genlayer.gl' has no attribute 'block'
+gl.block.timestamp ERROR: AttributeError: module 'genlayer.gl' has no attribute 'block'
+gl.chain.block_number  ERROR: AttributeError: module 'genlayer.gl' has no attribute 'chain'
+gl.message.block_number ERROR: AttributeError: 'MessageType' object has no attribute 'block_number'
+gl.vm.block_number ERROR: AttributeError: module 'genlayer.gl.vm' has no attribute 'block_number'
+```
+
+`gl.block` and `gl.chain` don't exist as namespaces at all (not "exist but
+empty" -- an `AttributeError` at the module level). `gl.message` and
+`gl.vm` exist but expose no block/height/sequence field. **There is no
+monotonic counter of any kind available to an Intelligent Contract on
+this runtime.** A literal enforced-duration or enforced-block-count
+challenge period is not buildable here, confirmed rather than assumed.
+
+Practically: the original single-transaction `finalize()` let an owner
+call it in the very next transaction after `run_adjudication` succeeded,
+so a would-be challenger had to win a race against the owner's own
+finalize call with no guaranteed window to even see the verdict land
+first.
+
+**Honesty about what this fix actually delivers:** the two-step commit
+below closes that same-transaction race, but it does **not** enforce a
+minimum duration or a minimum number of blocks/transactions between the
+two steps -- nothing stops the same owner from calling both back-to-back.
+It only helps if a third party's challenge transaction actually lands in
+the gap. That's a real improvement, not the literal "enforced period" the
+request asked for, and it's worth saying so plainly rather than
+implying full compliance.
 
 **The fix:** `finalize()` is split into two transactions, reusing a status
 value (`FORK_CHALLENGE_WINDOW`) the original Stage 2 design declared but
