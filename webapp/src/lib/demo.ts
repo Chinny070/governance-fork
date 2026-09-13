@@ -4,6 +4,14 @@
 // web render succeeds deterministically. The intent envelope is written to
 // faithfully represent the proposal, so semantic adjudication converges on
 // FAITHFUL — the same shape proven in the contract's live end-to-end run.
+//
+// The canonical source and evidence URLs must actually be live: fix #2
+// (Stage 10) requires the proposal's own source URL to be included as
+// evidence and successfully fetched before seal_evidence will complete.
+// en.wikipedia.org/wiki/Arbitrum (used here previously) is now a genuine
+// 404 -- confirmed live via curl during the Stage 10 e2e verification --
+// so both the canonical proposal_url and the matching evidence entry now
+// point at the DAO governance article instead, verified live the same way.
 
 export const DEMO_PROPOSAL = {
   dao: {
@@ -13,7 +21,7 @@ export const DEMO_PROPOSAL = {
   root: {
     externalId: "AIP-1",
     title: "AIP-1: Ratify the Arbitrum Constitution and governance framework",
-    url: "https://en.wikipedia.org/wiki/Arbitrum",
+    url: "https://en.wikipedia.org/wiki/Decentralized_autonomous_organization",
     params: [
       ["framework", "Arbitrum Constitution"],
       ["governed_chains", "Arbitrum One, Arbitrum Nova"],
@@ -45,19 +53,19 @@ export const DEMO_PROPOSAL = {
   },
   evidence: [
     {
-      url: "https://en.wikipedia.org/wiki/Arbitrum",
+      url: "https://en.wikipedia.org/wiki/Decentralized_autonomous_organization",
       evidenceClass: "THIRD_PARTY_ANALYSIS",
       relevanceClaim:
-        "Independent overview of Arbitrum, its DAO, the ARB token and the Constitution's role.",
+        "Explains the DAO governance model the Arbitrum Constitution's framework implements — the proposal's own canonical source.",
       authorityClaim: "Wikipedia — widely cited encyclopaedic reference",
       temporalMarker: "current",
       renderProfile: "STANDARD",
     },
     {
-      url: "https://en.wikipedia.org/wiki/Decentralized_autonomous_organization",
+      url: "https://en.wikipedia.org/wiki/Ethereum",
       evidenceClass: "THIRD_PARTY_ANALYSIS",
       relevanceClaim:
-        "Explains the DAO governance model the proposal's framework implements.",
+        "Background on the Ethereum smart-contract platform Arbitrum operates as a rollup on top of.",
       authorityClaim: "Wikipedia",
       temporalMarker: "current",
       renderProfile: "STANDARD",
