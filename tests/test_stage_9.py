@@ -46,6 +46,7 @@ def _finalized_root(overrides=None):
     c, rid, case_id, eids = s8._root_with_verdict(overrides)
     shim.reset_message_context()          # sender back to root.proposer (default)
     c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+    shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
     c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
     return c, rid
 
@@ -54,6 +55,7 @@ def _finalized_fork(overrides=None):
     c, rid, fid, case_id, creator, eids = s8._fork_with_verdict(overrides)
     shim.set_sender(creator)
     c.open_finality_window(fid, gf.TARGET_KIND_FORK)
+    shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
     c.finalize(fid, gf.TARGET_KIND_FORK)
     return c, rid, fid, creator
 
@@ -236,6 +238,7 @@ class SettlementTests(unittest.TestCase):
         shim.get_mock_semantic().reset()
         shim.reset_message_context()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_REJECTED)
 
@@ -267,6 +270,7 @@ class SettlementTests(unittest.TestCase):
         shim.get_mock_semantic().reset()
         shim.reset_message_context()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         c.settle_bond(_bond_ids(c, rid, gf.TARGET_KIND_ROOT_ENVELOPE)[0])  # primary first
         ch_bond = int(c.get_challenge(cid).bond_id)
@@ -327,6 +331,7 @@ class SettlementTests(unittest.TestCase):
         shim.get_mock_semantic().reset()
         shim.reset_message_context()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         ch_bond = int(c.get_challenge(cid).bond_id)
         with self.assertRaises(UserError):
@@ -397,6 +402,7 @@ class InvariantTests(unittest.TestCase):
         shim.get_mock_semantic().reset()
         shim.set_sender(creator)
         c.open_finality_window(fid, gf.TARGET_KIND_FORK)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(fid, gf.TARGET_KIND_FORK)
 
         ids = (_bond_ids(c, rid, gf.TARGET_KIND_ROOT_ENVELOPE)

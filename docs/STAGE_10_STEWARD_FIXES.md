@@ -77,80 +77,103 @@ retained case ownership for everything downstream.
 `gl.message.sender_address == root.proposer`, or reverts with `"only the
 importing proposer may submit this root's envelope"`.
 
-## 4. A real two-step finality commit
+## 4. A real, enforced-duration challenge period
 
-**The constraint:** this pinned GenVM runtime has no block-time source —
-every timestamp is `u256(0)` (established live in Stage 6a/9 probes). That
-proves no wall-clock *time* is available, but not, by itself, that no
-block *number* or sequence counter is available either -- those are a
-different question. Rather than extend the earlier conclusion further
-than it was actually tested, `contracts/probe/block_time_probe.py` asked
-it directly, live: does `gl.block`, `gl.chain`, or any field on
-`gl.message` / `gl.vm` expose a block number, height, or sequence value?
+**Revision history on this fix:** the first version shipped here claimed
+this runtime "has no block-time source" and shipped a two-step commit
+that only closed a same-transaction race, without a real enforced
+duration — and said so plainly rather than overclaiming. That
+conclusion was correct as far as it was tested, but it was tested
+incompletely: `contracts/probe/block_time_probe.py` checked `gl.block`,
+`gl.chain`, `gl.message.block_number`, and `gl.vm.block_number` — all of
+which genuinely don't exist — but never tried the one name that does.
+When directly asked "why can't a runtime with a clock be built," the
+right move was to check rather than repeat the inherited conclusion, and
+`contracts/probe/datetime_probe.py` found it: **`gl.message_raw` is a
+real, live, populated dict, and `gl.message_raw["datetime"]` returns a
+genuine, monotonically-increasing, consensus-safe timestamp** — on this
+exact already-deployed runtime hash, no migration needed. This section
+now describes the corrected, literal fix.
 
-Deployed to StudioNet (`0x7594d3D29DabeB4ADd174809B939d4b85e70fB6b`),
-`probe()` returned:
+**Live proof, in order:**
 
-```
-gl.message.sender_address = Address("0x3A31...")
-gl.block.number    ERROR: AttributeError: module 'genlayer.gl' has no attribute 'block'
-gl.block.timestamp ERROR: AttributeError: module 'genlayer.gl' has no attribute 'block'
-gl.chain.block_number  ERROR: AttributeError: module 'genlayer.gl' has no attribute 'chain'
-gl.message.block_number ERROR: AttributeError: 'MessageType' object has no attribute 'block_number'
-gl.vm.block_number ERROR: AttributeError: module 'genlayer.gl.vm' has no attribute 'block_number'
-```
+1. Deployed `contracts/probe/datetime_probe.py` to StudioNet
+   (`0x1070b1EE83939B57919dAF0c9e850a51EaE5f43c` for the write-consensus
+   run; earlier addresses for the introspection runs). `dir(gl)` on the
+   pinned runtime lists `message_raw` at the top level (distinct from
+   `gl.message`); reading it returns:
+   ```
+   gl.message_raw = {'chain_id': 61999, 'contract_address': Address(...),
+     'datetime': '2026-09-13T01:41:42.341487Z', 'entry_data': b'...',
+     'entry_kind': 0, 'entry_stage_data': None, 'is_init': False,
+     'origin_address': Address(...), 'sender_address': Address(...),
+     'stack': [], 'value': 0}
+   ```
+2. Called a `@gl.public.write.payable` method twice, ~60 seconds apart,
+   each storing `gl.message_raw["datetime"]` into contract state. **Both
+   transactions reached full validator consensus** (`status: FINALIZED`,
+   no disagreement) — proving the value is fixed per-transaction and
+   identical across every validator, not each validator's own local wall
+   clock (matching the GenVM host spec: deterministic-mode calls return
+   "the transaction timestamp, keeping the value deterministic across
+   validators"). Reading both stored values back showed monotonically
+   increasing timestamps ~51-61 seconds apart, matching real elapsed
+   time.
+3. Confirmed the stdlib `datetime` module is available inside the
+   sandboxed contract: `datetime.datetime.fromisoformat(...)` parses the
+   ISO-8601 string and `(b - a).total_seconds()` computes a correct real
+   duration between the two captured values, entirely as pure
+   deterministic arithmetic on data already fixed in the transaction.
+4. Deployed a fresh, complete instance of the corrected
+   `governance_fork.py` to StudioNet (`0xE7287c3f561868942b6dBC184E0dDE2830339290`)
+   and drove the full pipeline live: `register_dao` → `import_root_proposal`
+   → `lock_bond` → `submit_root_envelope` → `close_evidence` →
+   `fetch_evidence` ×2 → `seal_evidence` → `adjudicate` →
+   `run_adjudication` (committed a real verdict) → `open_finality_window`
+   → an immediate `finalize` call. The immediate `finalize` **correctly
+   reverted** with the exact new message:
+   ```
+   challenge window not yet elapsed (36s of 259200s required)
+   ```
+   confirming the whole mechanism — real timestamp capture, real elapsed-
+   time arithmetic, and the revert gate — works end-to-end on a genuine
+   fresh deployment, not just in the isolated probe or the unit-test mock
+   clock.
 
-`gl.block` and `gl.chain` don't exist as namespaces at all (not "exist but
-empty" -- an `AttributeError` at the module level). `gl.message` and
-`gl.vm` exist but expose no block/height/sequence field. **There is no
-monotonic counter of any kind available to an Intelligent Contract on
-this runtime.** A literal enforced-duration or enforced-block-count
-challenge period is not buildable here, confirmed rather than assumed.
+**The fix:** `RootProposal` and `Fork` each gained a
+`finality_window_opened_at: u256` field (epoch seconds). A new private
+helper, `_now_epoch_seconds()`, reads `gl.message_raw["datetime"]` and
+parses it to epoch seconds. `open_finality_window(target_id,
+target_kind)` — unchanged preconditions (decisive verdict exists, no
+open challenge, owner-gated with the same forced-finality escape) —
+now also stamps `finality_window_opened_at` with the real transaction
+time. `finalize(target_id, target_kind)` now computes `elapsed =
+_now_epoch_seconds() - opened_at` and reverts with `"challenge window
+not yet elapsed (Ns of Ms required)"` unless `elapsed >=
+CHALLENGE_WINDOW_SECONDS` (72 hours — a constant the original Stage 2
+design declared and exposed via `get_constants()` but never actually
+enforced anywhere until now). This is the literal, enforced wall-clock
+challenge period the steward asked for: the same owner calling both
+steps back-to-back no longer bypasses anything, because `finalize`
+itself refuses to execute until real time has passed, independent of
+who called `open_finality_window` or when.
 
-Practically: the original single-transaction `finalize()` let an owner
-call it in the very next transaction after `run_adjudication` succeeded,
-so a would-be challenger had to win a race against the owner's own
-finalize call with no guaranteed window to even see the verdict land
-first.
+The same-transaction-race protection from the prior revision is also
+still in place and unchanged: `challenge_verdict` unconditionally
+overwrites the target's status to `*_CHALLENGE_OPEN`, so a challenge
+landing at any point after `open_finality_window` — including during
+the now-enforced wait — flips the target out of `*_CHALLENGE_WINDOW`
+and `finalize` correctly reverts, window-elapsed or not.
 
-**Honesty about what this fix actually delivers:** the two-step commit
-below closes that same-transaction race, but it does **not** enforce a
-minimum duration or a minimum number of blocks/transactions between the
-two steps -- nothing stops the same owner from calling both back-to-back.
-It only helps if a third party's challenge transaction actually lands in
-the gap. That's a real improvement, not the literal "enforced period" the
-request asked for, and it's worth saying so plainly rather than
-implying full compliance.
-
-**The fix:** `finalize()` is split into two transactions, reusing a status
-value (`FORK_CHALLENGE_WINDOW`) the original Stage 2 design declared but
-never wired up, plus a new mirror for root envelopes
-(`ENVELOPE_CHALLENGE_WINDOW`):
-
-1. **`open_finality_window(target_id, target_kind)`** — carries every
-   precondition the old `finalize()` had (decisive verdict exists, no open
-   challenge, owner-gated with the same forced-finality escape once the
-   challenge budget is spent). On success it moves the target to
-   `*_CHALLENGE_WINDOW` — nothing else changes yet.
-2. **`finalize(target_id, target_kind)`** — now requires the target to
-   already be in `*_CHALLENGE_WINDOW` (set by a *prior, separate*
-   transaction), or reverts `"call open_finality_window first"`. It is now
-   **permissionless**: the owner's intent was already authenticated when
-   they opened the window, so anyone may execute the already-decided
-   outcome (the same pattern `seal_evidence` already uses).
-
-The actual protection: `challenge_verdict` unconditionally overwrites the
-target's status to `*_CHALLENGE_OPEN` regardless of what it was before. If
-a challenge lands in the gap between `open_finality_window` and `finalize`,
-the target is no longer `*_CHALLENGE_WINDOW` when `finalize` runs, so it
-correctly reverts and the challenge must be resolved first. This doesn't
-manufacture wall-clock time — it closes the single-transaction front-run
-gap the steward flagged, using the same two-step commit pattern this
-contract already relies on elsewhere (`adjudicate` / `run_adjudication`,
-`close_evidence` / `fetch_evidence` / `seal_evidence`).
-
-Tested directly: `test_challenge_after_open_window_blocks_finalize` opens
-the window, submits a challenge, and asserts `finalize` now reverts.
+Tested directly (`tests/test_stage_8.py`,
+`test_open_window_stamps_timestamp_and_finalize_rejects_before_window_elapses`):
+opens the window, asserts `finalize` reverts immediately, asserts it
+still reverts with `CHALLENGE_WINDOW_SECONDS - 1` elapsed, then asserts
+it succeeds two seconds later. Every other finalize-reaching test now
+advances the test shim's mock clock (`tests/_genlayer_shim.py`'s
+`gl.message_raw["datetime"]`, backed by an explicit `advance_clock()`
+test helper that models the live-proven behavior above) past the window
+before finalizing.
 
 ## ABI impact
 
@@ -163,15 +186,25 @@ preconditions and permission model changed.
 - `tests/test_stage_8.py` — `FinalizeTests` rewritten around the two-step
   commit: `open_window_needs_verdict`, `open_window_blocked_by_open_challenge`,
   `open_window_requires_owner`, `finalize_without_open_window_rejected`,
-  `double_open_window_rejected`, `challenge_after_open_window_blocks_finalize`
-  (the actual fix), plus every existing finalize path updated to call
-  `open_finality_window` first.
+  `double_open_window_rejected`, `challenge_after_open_window_blocks_finalize`,
+  and (the literal enforced-duration fix)
+  `test_open_window_stamps_timestamp_and_finalize_rejects_before_window_elapses`,
+  plus every existing finalize path updated to call `open_finality_window`
+  first and to advance the mock clock past `CHALLENGE_WINDOW_SECONDS`
+  before finalizing.
 - `tests/test_stage_9.py` — `_finalized_root` / `_finalized_fork` helpers
-  and every direct `finalize` call site updated to the two-step form.
+  and every direct `finalize` call site updated to the two-step form plus
+  the clock advance.
 - `tests/test_stage_6b.py` — `test_root_seal_rejected_without_canonical_source_evidence`
   (renamed/rewritten from a test that asserted the old opportunistic
   behaviour) and one fixture URL corrected so an unrelated-case-liveness
   test still includes its own canonical source.
 - `tests/stage_2_checks.py` — ABI count updated to 17 write methods.
+- `tests/_genlayer_shim.py` — added a mock wall clock backing
+  `gl.message_raw["datetime"]` (`advance_clock()` / `set_clock()`),
+  reset alongside the native-GEN ledger on each fresh contract instance,
+  modeling the live-proven behavior in section 4 above.
 
-397/397 local tests pass; all 12 static structural checks pass.
+400/400 local tests pass; `tests/stage_2_checks.py` reports 14/14 checks
+passed (12 run locally, 2 marked environment-unavailable: genvm-lint and
+a live genlayer-studio schema-load, neither present in this sandbox).

@@ -322,9 +322,26 @@ class FinalizeTests(unittest.TestCase):
         with self.assertRaises(UserError):
             c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
 
+    def test_open_window_stamps_timestamp_and_finalize_rejects_before_window_elapses(self):
+        # The actual Stage 10 fix: finalize() now enforces
+        # CHALLENGE_WINDOW_SECONDS of real elapsed time (via
+        # gl.message_raw["datetime"]), not just transaction ordering.
+        c, rid, case_id, eids = _root_with_verdict()
+        c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        self.assertGreater(int(c.get_root_proposal(rid).finality_window_opened_at), 0)
+        with self.assertRaises(UserError):
+            c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS - 1)
+        with self.assertRaises(UserError):
+            c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(2)
+        c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_FAITHFUL)
+
     def test_finalize_faithful_root_then_forkable(self):
         c, rid, case_id, eids = _root_with_verdict()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_FAITHFUL)
         r = c.get_root_proposal(rid)
@@ -343,12 +360,14 @@ class FinalizeTests(unittest.TestCase):
         )
         shim.set_sender(creator)
         c.open_finality_window(fid, gf.TARGET_KIND_FORK)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(fid, gf.TARGET_KIND_FORK)
         self.assertEqual(c.get_fork(fid).status, gf.FORK_FINALIZED_NOT_FAITHFUL)
 
     def test_double_finalize_rejected(self):
         c, rid, case_id, eids = _root_with_verdict()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         with self.assertRaises(UserError):
             c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
@@ -358,6 +377,7 @@ class FinalizeTests(unittest.TestCase):
     def test_finalized_root_not_challengeable(self):
         c, rid, case_id, eids = _root_with_verdict()
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         with self.assertRaises(UserError):
             c.challenge_verdict(rid, gf.TARGET_KIND_ROOT_ENVELOPE,
@@ -377,6 +397,7 @@ class FinalizeTests(unittest.TestCase):
         # (permissionless) may finalize.
         shim.set_sender(shim.Address("0x" + "42" * 20))
         c.open_finality_window(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(rid, gf.TARGET_KIND_ROOT_ENVELOPE)
         self.assertEqual(c.get_root_proposal(rid).envelope_status, gf.ENVELOPE_FAITHFUL)
 
@@ -384,6 +405,7 @@ class FinalizeTests(unittest.TestCase):
         c, rid, fid, case_id, creator, eids = _fork_with_verdict()
         shim.set_sender(creator)
         c.open_finality_window(fid, gf.TARGET_KIND_FORK)
+        shim.advance_clock(gf.CHALLENGE_WINDOW_SECONDS + 1)
         c.finalize(fid, gf.TARGET_KIND_FORK)
         self.assertEqual(c.get_fork(fid).status, gf.FORK_FINALIZED_FAITHFUL)
         parent = c.get_fork(fid)

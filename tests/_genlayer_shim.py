@@ -152,6 +152,48 @@ class _MessageContext:
         self.value = u256(0)
 
 
+# Stage 10: mock wall clock backing gl.message_raw["datetime"], modeling
+# what contracts/probe/datetime_probe.py proved live -- a real, deterministic,
+# monotonically-increasing ISO-8601 timestamp fixed per transaction. Reset
+# to a fixed base alongside the native-GEN ledger (_CHAIN.reset()) so each
+# fresh contract instance starts from the same deterministic point; tests
+# advance it explicitly with advance_clock() to simulate elapsed time
+# between open_finality_window() and finalize().
+_CLOCK_BASE_EPOCH = 1_800_000_000
+_CLOCK_STATE = {"epoch": _CLOCK_BASE_EPOCH}
+
+
+def _epoch_to_iso(epoch):
+    import datetime as _dt
+
+    return (
+        _dt.datetime.fromtimestamp(int(epoch), _dt.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+class _MessageRawDict(dict):
+    """Minimal stand-in for gl.message_raw: only 'datetime' is modeled,
+    since that's the only key governance_fork.py reads."""
+
+    def __getitem__(self, key):
+        if key == "datetime":
+            return _epoch_to_iso(_CLOCK_STATE["epoch"])
+        return super().__getitem__(key)
+
+
+def advance_clock(seconds: int) -> None:
+    """Test helper: move the mock clock forward, simulating elapsed
+    wall-clock time between two write transactions."""
+    _CLOCK_STATE["epoch"] += int(seconds)
+
+
+def set_clock(epoch: int) -> None:
+    """Test helper: pin the mock clock to an exact epoch-seconds value."""
+    _CLOCK_STATE["epoch"] = int(epoch)
+
+
 # Stage 9: native-GEN ledger for LOCAL LOGIC TESTS. Models what
 # contracts/probe/value_transfer_probe.py proved on the pinned runtime:
 # a payable method credits self.balance by gl.message.value, and
@@ -169,6 +211,7 @@ class _MockChain:
     def reset(self):
         self._bal = {}
         self.current_contract = str(_CONTRACT_ADDR)
+        _CLOCK_STATE["epoch"] = _CLOCK_BASE_EPOCH
 
     def fund(self, addr, amount):
         a = str(addr)
@@ -406,6 +449,7 @@ class _GLNamespace:
         self.vm = _VMNamespace
         self.public = _PublicNamespace
         self.message = _MessageContext()
+        self.message_raw = _MessageRawDict()
         self.Contract = _Contract
         self.mock_web = _MockWebRegistry()
         self.mock_semantic = _MockSemanticRegistry()

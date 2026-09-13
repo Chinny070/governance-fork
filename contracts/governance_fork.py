@@ -1406,6 +1406,10 @@ class RootProposal:
     # run_adjudication on the envelope case; moved to a replacement verdict
     # only when a challenge is RESOLVED_FLIPPED. 0 before adjudication.
     current_verdict_id: u256
+    # Stage 10: epoch-seconds timestamp of the most recent open_finality_window()
+    # call (0 = never opened / not currently pending). finalize() requires
+    # CHALLENGE_WINDOW_SECONDS to have elapsed since this value.
+    finality_window_opened_at: u256
 
 
 @allow_storage
@@ -1449,6 +1453,10 @@ class Fork:
     child_count: u32
     created_at: u256
     creator_bond_id: u256
+    # Stage 10: epoch-seconds timestamp of the most recent open_finality_window()
+    # call (0 = never opened / not currently pending). finalize() requires
+    # CHALLENGE_WINDOW_SECONDS to have elapsed since this value.
+    finality_window_opened_at: u256
 
 
 @allow_storage
@@ -1875,6 +1883,7 @@ class Contract(gl.Contract):
             identity_status=IDENTITY_COMMUNITY_IMPORTED,
             imported_at=u256(0),
             current_verdict_id=u256(0),
+            finality_window_opened_at=u256(0),
         )
         if dao_id not in self.roots_by_dao:
             self.roots_by_dao[dao_id] = []
@@ -2130,6 +2139,7 @@ class Contract(gl.Contract):
             identity_status=root.identity_status,
             imported_at=root.imported_at,
             current_verdict_id=root.current_verdict_id,
+            finality_window_opened_at=root.finality_window_opened_at,
         )
         # Stage 9: bind the pre-locked envelope bond to this root (all
         # checks passed).
@@ -2333,6 +2343,7 @@ class Contract(gl.Contract):
             child_count=u32(0),
             created_at=u256(0),
             creator_bond_id=creator_bond_id,
+            finality_window_opened_at=u256(0),
         )
         if resolved_root_id not in self.forks_by_root:
             self.forks_by_root[resolved_root_id] = []
@@ -2361,6 +2372,7 @@ class Contract(gl.Contract):
                 child_count=u32(int(pf.child_count) + 1),
                 created_at=pf.created_at,
                 creator_bond_id=pf.creator_bond_id,
+                finality_window_opened_at=pf.finality_window_opened_at,
             )
         return fork_id
 
@@ -2576,6 +2588,7 @@ class Contract(gl.Contract):
                 child_count=fork.child_count,
                 created_at=fork.created_at,
                 creator_bond_id=fork.creator_bond_id,
+                finality_window_opened_at=fork.finality_window_opened_at,
             )
         return case_id
 
@@ -2846,6 +2859,7 @@ class Contract(gl.Contract):
                     identity_status=root.identity_status,
                     imported_at=root.imported_at,
                     current_verdict_id=root.current_verdict_id,
+                    finality_window_opened_at=root.finality_window_opened_at,
                 )
         else:
             raise gl.vm.UserError("unsupported case_type for seal")
@@ -3092,8 +3106,29 @@ class Contract(gl.Contract):
             challenge_id=case.challenge_id,
         )
 
-    def _write_root(self, root_id, new_status, new_verdict_id):
+    def _now_epoch_seconds(self):
+        # gl.message_raw["datetime"] is the GenVM host's transaction
+        # timestamp (ISO-8601 UTC, e.g. "2026-09-13T01:47:48.987715Z"): a
+        # deterministic value fixed at transaction-build time and gossiped
+        # to every validator as part of the tx envelope, not each
+        # validator's own local wall clock -- confirmed live by two
+        # separate write transactions both reaching full validator
+        # consensus while returning distinct, monotonically increasing
+        # values (contracts/probe/datetime_probe.py). Parsing it with the
+        # stdlib datetime module is pure arithmetic on that fixed string,
+        # so it stays deterministic across validators.
+        import datetime as _datetime
+
+        raw = str(gl.message_raw["datetime"]).replace("Z", "+00:00")
+        return u256(int(_datetime.datetime.fromisoformat(raw).timestamp()))
+
+    def _write_root(self, root_id, new_status, new_verdict_id, new_window_opened_at=None):
         root = self.roots[root_id]
+        window_opened_at = (
+            root.finality_window_opened_at
+            if new_window_opened_at is None
+            else new_window_opened_at
+        )
         self.roots[root_id] = RootProposal(
             dao_id=root.dao_id,
             external_proposal_id=root.external_proposal_id,
@@ -3109,10 +3144,16 @@ class Contract(gl.Contract):
             identity_status=root.identity_status,
             imported_at=root.imported_at,
             current_verdict_id=new_verdict_id,
+            finality_window_opened_at=window_opened_at,
         )
 
-    def _write_fork_status_verdict(self, fork_id, new_status, new_verdict_id):
+    def _write_fork_status_verdict(self, fork_id, new_status, new_verdict_id, new_window_opened_at=None):
         fork = self.forks[fork_id]
+        window_opened_at = (
+            fork.finality_window_opened_at
+            if new_window_opened_at is None
+            else new_window_opened_at
+        )
         self.forks[fork_id] = Fork(
             parent_id=fork.parent_id,
             parent_kind=fork.parent_kind,
@@ -3131,6 +3172,7 @@ class Contract(gl.Contract):
             child_count=fork.child_count,
             created_at=fork.created_at,
             creator_bond_id=fork.creator_bond_id,
+            finality_window_opened_at=window_opened_at,
         )
 
     def _write_challenge(self, ch_id, ch, new_replacement_vid, new_status):
@@ -3601,18 +3643,16 @@ class Contract(gl.Contract):
         # after run_adjudication succeeded -- a challenger who wanted to
         # contest the verdict had to win a race against the owner's own
         # finalize call, with no guaranteed window to even see the verdict
-        # land first. This runtime exposes no block-time source (every
-        # timestamp is u256(0)), so a real wall-clock challenge period
-        # cannot be built -- but a two-step commit can still close the
-        # single-transaction race: this call is the owner's deterministic,
-        # auditable declaration of intent to finalize; finalize() itself
-        # now requires this to have already happened as a PRIOR, separate
-        # transaction, and re-validates no challenge is open at that later
-        # point. A challenge_verdict landing in the gap between these two
-        # calls unconditionally overwrites the target's status away from
-        # *_CHALLENGE_WINDOW (see challenge_verdict), so finalize() will
-        # see it and refuse. Same owner-gate and forced-finality escape as
-        # the original finalize() had.
+        # land first. This call stamps gl.message_raw["datetime"] (see
+        # _now_epoch_seconds) as the window's open time; finalize() below
+        # refuses to run until CHALLENGE_WINDOW_SECONDS have actually
+        # elapsed since that timestamp, giving challengers a real,
+        # enforced wall-clock window rather than just a same-transaction
+        # race fix. A challenge_verdict landing in the gap unconditionally
+        # overwrites the target's status away from *_CHALLENGE_WINDOW (see
+        # challenge_verdict), so finalize() will see it and refuse
+        # regardless of elapsed time. Same owner-gate and forced-finality
+        # escape as the original finalize() had.
         if self.paused:
             raise gl.vm.UserError("paused")
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
@@ -3646,19 +3686,24 @@ class Contract(gl.Contract):
         if gl.message.sender_address != owner and total < MAX_CHALLENGES_PER_TARGET:
             raise gl.vm.UserError("only the target owner may open the finality window")
 
+        opened_at = self._now_epoch_seconds()
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
-            self._write_root(target_id, ENVELOPE_CHALLENGE_WINDOW, governing_vid)
+            self._write_root(target_id, ENVELOPE_CHALLENGE_WINDOW, governing_vid, opened_at)
         else:
-            self._write_fork_status_verdict(target_id, FORK_CHALLENGE_WINDOW, governing_vid)
+            self._write_fork_status_verdict(target_id, FORK_CHALLENGE_WINDOW, governing_vid, opened_at)
 
     @gl.public.write
     def finalize(self, target_id: u256, target_kind: str) -> None:
         # Stage 10 (steward-requested): now requires open_finality_window()
-        # to have already run as a separate, prior transaction (see its
-        # docstring). Permissionless from here -- the owner's intent was
-        # already authenticated when they opened the window; anyone may
-        # execute the already-decided outcome, the same pattern
-        # seal_evidence already uses for a progress/exit operation.
+        # to have already run as a separate, prior transaction, AND that
+        # CHALLENGE_WINDOW_SECONDS have actually elapsed since that call's
+        # timestamp (gl.message_raw["datetime"], see _now_epoch_seconds) --
+        # a real, enforced wall-clock challenge period, not just an
+        # ordering requirement. Permissionless from here -- the owner's
+        # intent was already authenticated when they opened the window;
+        # anyone may execute the already-decided outcome once the window
+        # has elapsed, the same pattern seal_evidence already uses for a
+        # progress/exit operation.
         if self.paused:
             raise gl.vm.UserError("paused")
         if target_kind == TARGET_KIND_ROOT_ENVELOPE:
@@ -3667,17 +3712,28 @@ class Contract(gl.Contract):
             root = self.roots[target_id]
             governing_vid = root.current_verdict_id
             pending = root.envelope_status == ENVELOPE_CHALLENGE_WINDOW
+            opened_at = root.finality_window_opened_at
         elif target_kind == TARGET_KIND_FORK:
             if target_id not in self.forks:
                 raise gl.vm.UserError("fork not found")
             fork = self.forks[target_id]
             governing_vid = fork.current_verdict_id
             pending = fork.status == FORK_CHALLENGE_WINDOW
+            opened_at = fork.finality_window_opened_at
         else:
             raise gl.vm.UserError("unknown target_kind")
 
         if not pending:
             raise gl.vm.UserError("call open_finality_window first")
+        elapsed = int(self._now_epoch_seconds()) - int(opened_at)
+        if elapsed < CHALLENGE_WINDOW_SECONDS:
+            raise gl.vm.UserError(
+                "challenge window not yet elapsed ("
+                + str(elapsed)
+                + "s of "
+                + str(CHALLENGE_WINDOW_SECONDS)
+                + "s required)"
+            )
         # Defense in depth: a challenge landing after open_finality_window
         # already flips the target's status away from *_CHALLENGE_WINDOW
         # (challenge_verdict writes *_CHALLENGE_OPEN unconditionally), so
