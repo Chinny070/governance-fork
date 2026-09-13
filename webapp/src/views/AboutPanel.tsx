@@ -135,7 +135,7 @@ export function AboutPanel() {
           </Row>
           <Row k="RPC">{STUDIONET.rpcUrl}</Row>
           <Row k="Source">
-            commit {CONTRACT_SOURCE_COMMIT} · 16 write + 17 view + 2 admin
+            commit {CONTRACT_SOURCE_COMMIT} · 17 write + 17 view + 2 admin
           </Row>
           <Row k="SHA-256">
             <span className="mono tiny">{CONTRACT_SOURCE_SHA256}</span>
