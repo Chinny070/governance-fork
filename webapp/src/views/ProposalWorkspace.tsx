@@ -5,6 +5,8 @@ import {
   CASE_STATE,
   CHALLENGE_GROUNDS_FORK,
   CHALLENGE_GROUNDS_ROOT_ENVELOPE,
+  ENVELOPE_STATUS,
+  FORK_STATUS,
   RETRIEVAL_STATUS,
 } from "../lib/enums";
 import { formatGen, isEmptyHex } from "../lib/format";
@@ -797,11 +799,18 @@ function FinalitySection({
   busy: boolean;
 }) {
   const hasVerdict = t.currentVerdictId > 0n;
-  const canFinalize = hasVerdict && !t.isFinal && !t.openChallenge;
+  const pending =
+    t.status === ENVELOPE_STATUS.CHALLENGE_WINDOW ||
+    t.status === FORK_STATUS.CHALLENGE_WINDOW;
+  const canOpenWindow = hasVerdict && !t.isFinal && !pending && !t.openChallenge;
+  const canFinalize = pending && !t.openChallenge;
 
   return (
     <div className="section">
-      <SectionHead eyebrow="Finality & bonds" title={t.isFinal ? "Final" : "Open"} />
+      <SectionHead
+        eyebrow="Finality & bonds"
+        title={t.isFinal ? "Final" : pending ? "Finality window open" : "Open"}
+      />
 
       {t.isFinal ? (
         <Note tone={t.isFaithfulFinal ? "green" : "neutral"}>
@@ -810,23 +819,60 @@ function FinalitySection({
             ? " It is now forkable — build an alternative below."
             : " It is not forkable."}
         </Note>
-      ) : (
-        <Guarded>
-          <button
-            className="primary"
-            disabled={busy || !canFinalize}
-            onClick={() => act(() => api.finalize(g(), t.id, t.targetKindConst))}
-            title={
-              !hasVerdict
-                ? "No verdict yet"
-                : t.openChallenge
+      ) : pending ? (
+        <>
+          <Note tone="coral">
+            The finality window is open — a decisive verdict exists and
+            finalize is ready to run. This is the challenge window: a
+            challenge submitted now will still be honored and will block
+            finalize until it's resolved.
+          </Note>
+          <Guarded>
+            <button
+              className="primary"
+              style={{ marginTop: 10 }}
+              disabled={busy || !canFinalize}
+              onClick={() => act(() => api.finalize(g(), t.id, t.targetKindConst))}
+              title={
+                t.openChallenge
                   ? "Resolve the open challenge first"
-                  : "Finalize"
-            }
-          >
-            Finalize {t.kind}
-          </button>
-        </Guarded>
+                  : "Anyone may execute finalize now"
+              }
+            >
+              Finalize {t.kind}
+            </button>
+          </Guarded>
+        </>
+      ) : (
+        <>
+          <p className="muted tiny" style={{ marginTop: 0 }}>
+            This runtime has no block-time source, so there's no wall-clock
+            challenge period — instead, finalizing is two transactions.
+            Opening the window is owner-gated; a challenge landing before you
+            finalize is guaranteed to be seen and will block it.
+          </p>
+          <Guarded>
+            <button
+              className="primary"
+              disabled={busy || !canOpenWindow}
+              onClick={() =>
+                act(() => api.openFinalityWindow(g(), t.id, t.targetKindConst))
+              }
+              title={
+                !hasVerdict
+                  ? "No verdict yet"
+                  : t.openChallenge
+                    ? "Resolve the open challenge first"
+                    : "Open the finality window"
+              }
+            >
+              1 · Open finality window
+            </button>
+            <button className="small" disabled style={{ marginLeft: 8 }}>
+              2 · Finalize (after window opens)
+            </button>
+          </Guarded>
+        </>
       )}
 
       {t.bonds.length > 0 && (

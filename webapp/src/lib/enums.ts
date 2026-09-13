@@ -89,6 +89,9 @@ export const ENVELOPE_STATUS = {
   EVIDENCE_FROZEN: "ENVELOPE_EVIDENCE_FROZEN",
   ADJUDICATING: "ENVELOPE_ADJUDICATING",
   CHALLENGE_OPEN: "ENVELOPE_CHALLENGE_OPEN",
+  // Stage 10: a decisive verdict exists and open_finality_window() has run,
+  // but finalize() has not -- see api.openFinalityWindow.
+  CHALLENGE_WINDOW: "ENVELOPE_CHALLENGE_WINDOW",
   FAITHFUL: "ENVELOPE_FAITHFUL",
   REJECTED: "ENVELOPE_REJECTED",
   UNCLEAR: "ENVELOPE_UNCLEAR",

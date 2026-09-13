@@ -314,6 +314,17 @@ export async function challengeVerdict(
   };
 }
 
+// Stage 10: finalize is now a two-step commit. open_finality_window is
+// owner-gated (same forced-finality escape as before) and carries every
+// precondition finalize used to check; finalize itself is now
+// permissionless but requires the window already open, and re-validates no
+// challenge landed in the gap.
+export const openFinalityWindow = (
+  c: GenLayerClient,
+  targetId: bigint,
+  targetKind: string,
+) => writeAndWait(c, "open_finality_window", [targetId, targetKind]);
+
 export const finalize = (
   c: GenLayerClient,
   targetId: bigint,
