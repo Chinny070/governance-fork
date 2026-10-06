@@ -203,3 +203,17 @@ export interface ConstantsView {
   treasury_addr: Address;
   paused: boolean;
 }
+
+export interface AdoptionInfo {
+  root_id: bigint;
+  opened_at: bigint;
+  closes_at: bigint;
+  closed: boolean;
+  adopted_fork_id: bigint;
+}
+
+export interface Reputation {
+  forks_faithful: number;
+  forks_not_faithful: number;
+  forks_adopted: number;
+}

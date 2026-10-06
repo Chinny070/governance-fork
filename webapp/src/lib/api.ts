@@ -20,6 +20,7 @@ import {
   TARGET_KIND,
 } from "./enums";
 import type {
+  AdoptionInfo,
   Bond,
   Case,
   Challenge,
@@ -28,6 +29,7 @@ import type {
   Evidence,
   Fork,
   PageIds,
+  Reputation,
   RootProposal,
   VerdictRecord,
 } from "./types";
@@ -54,6 +56,13 @@ export const getChallenge = (id: bigint | number) =>
   viewOpt<Challenge>("get_challenge", [BigInt(id)]);
 export const getBond = (id: bigint | number) =>
   viewOpt<Bond>("get_bond", [BigInt(id)]);
+
+export const getAdoption = (rootId: bigint | number) =>
+  viewOpt<AdoptionInfo>("get_adoption", [BigInt(rootId)]);
+export const getForkSignalCount = (forkId: bigint | number) =>
+  view<number>("get_fork_signal_count", [BigInt(forkId)]);
+export const getReputation = (creatorHex: string) =>
+  view<Reputation>("get_reputation", [creatorHex.toLowerCase()]);
 
 export const listDaos = (cursor = 0n, limit = PAGE) =>
   view<PageIds>("list_daos", [cursor, limit]);
@@ -352,3 +361,11 @@ export function parseId(raw: string | undefined, ctx: string): bigint {
 
 export { BOND_AMOUNT_WEI, BOND_PURPOSE, CHALLENGER_FLIP_REWARD_WEI, TARGET_KIND };
 export type { GenLayerClient, WriteResult };
+
+// Stage 11: adoption signalling (open -> signal -> close).
+export const openAdoption = (c: GenLayerClient, rootId: bigint) =>
+  writeAndWait(c, "open_adoption", [rootId]);
+export const signalAdoption = (c: GenLayerClient, forkId: bigint) =>
+  writeAndWait(c, "signal_adoption", [forkId]);
+export const closeAdoption = (c: GenLayerClient, rootId: bigint) =>
+  writeAndWait(c, "close_adoption", [rootId]);

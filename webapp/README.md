@@ -29,7 +29,7 @@ npm run build           # tsc + vite build -> dist/
 | Address, chain, explorer URLs | `src/lib/contract.ts` |
 | Every enum value + amounts (0.1 GEN bond, 0.05 GEN flip reward) | `src/lib/enums.ts` |
 | Client factory, receipt classification (ok / reverted / **Undetermined**) | `src/lib/genlayer.ts` |
-| Typed wrapper for all 36 methods; `lock_bond` → consume helpers | `src/lib/api.ts` |
+| Typed wrapper for all 42 methods; `lock_bond` → consume helpers | `src/lib/api.ts` |
 | Wallet connect + StudioNet detection / add-network | `src/lib/wallet.tsx` |
 | Transaction lifecycle state machine (sign → mine → re-read → done) | `src/lib/useTx.ts` |
 

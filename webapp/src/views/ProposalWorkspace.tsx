@@ -36,6 +36,12 @@ import { Guarded } from "../components/Guarded";
 import { TxProgress } from "../components/TxProgress";
 import { LineageTree } from "../components/LineageTree";
 import { ForkCreatorPanel } from "./ForkCreator";
+import {
+  AdoptionSection,
+  ForkDiff,
+  ReputationChip,
+  VerifyEvidence,
+} from "./Stage11";
 
 type Act = (fn: () => Promise<unknown>) => void;
 
@@ -105,6 +111,8 @@ export function ProposalWorkspace({
 
       {t.kind === "fork" && <WhatChanged t={t} />}
 
+      {t.kind === "fork" && <ForkDiff t={t} />}
+
       <EvidenceSection t={t} act={act} busy={tx.busy} />
 
       <AdjudicationSection t={t} act={act} busy={tx.busy} />
@@ -112,6 +120,10 @@ export function ProposalWorkspace({
       <ChallengeSection t={t} act={act} busy={tx.busy} />
 
       <FinalitySection t={t} act={act} busy={tx.busy} />
+
+      {t.kind === "root" && (
+        <AdoptionSection t={t} act={act} busy={tx.busy} reloadKey={nonce} />
+      )}
 
       {t.isFaithfulFinal && (
         <div className="section">
@@ -174,6 +186,13 @@ function CaseHeader({ t }: { t: TargetView }) {
           </Tag>
         )}
       </div>
+      {t.kind === "fork" && (
+        <div className="row" style={{ gap: 8, marginTop: 8 }}>
+          <span className="tiny faint">creator</span>
+          <AddrChip addr={t.fork!.creator} />
+          <ReputationChip creator={t.fork!.creator} />
+        </div>
+      )}
     </header>
   );
 }
@@ -420,6 +439,7 @@ function EvidenceSection({
                           : ""}
                       </div>
                     )}
+                    <VerifyEvidence ev={ev} />
                   </div>
                   <div className="aside">
                     <StatusTag value={ev.retrieval_status} dot={false} />

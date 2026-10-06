@@ -47,6 +47,9 @@ const EXPECTED = {
   list_challenges: 4,
   get_verdict_history: 4,
   list_bonds_by_target: 4,
+  get_adoption: 1,
+  get_fork_signal_count: 1,
+  get_reputation: 1,
   // writes
   register_dao: 2,
   import_root_proposal: 6,
@@ -65,6 +68,9 @@ const EXPECTED = {
   challenge_verdict: 5,
   open_finality_window: 2,
   finalize: 2,
+  open_adoption: 1,
+  signal_adoption: 1,
+  close_adoption: 1,
   pause: 0,
   unpause: 0,
 };

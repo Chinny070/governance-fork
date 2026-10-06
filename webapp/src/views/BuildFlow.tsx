@@ -19,6 +19,7 @@ import {
   type EvidenceRow,
 } from "../components/EvidenceForm";
 import { DEMO_PROPOSAL } from "../lib/demo";
+import { fetchSnapshotProposal, mapSnapshot, parseSnapshotUrl } from "../lib/snapshot";
 
 type Step = 1 | 2 | 3 | 4 | 5;
 const RAIL: [Step, string][] = [
@@ -70,6 +71,35 @@ export function BuildFlow() {
       ? daoName || "—"
       : daos.data?.find((d) => d.id === daoId)?.dao.name ?? "—";
   const evCount = evidence.filter((e) => e.url.trim()).length;
+
+  const [snapUrl, setSnapUrl] = useState("");
+  const [snapBusy, setSnapBusy] = useState(false);
+  const [snapMsg, setSnapMsg] = useState<string | null>(null);
+  const importSnapshot = async () => {
+    const parsed = parseSnapshotUrl(snapUrl);
+    if (!parsed) {
+      setSnapMsg("Paste a link like https://snapshot.org/#/<space>/proposal/0x…");
+      return;
+    }
+    setSnapBusy(true);
+    setSnapMsg(null);
+    try {
+      const f = mapSnapshot(await fetchSnapshotProposal(parsed.id));
+      setDaoMode("new");
+      setDaoName(f.daoName);
+      setDaoUrl(f.daoUrl);
+      setExtId(f.externalId);
+      setTitle(f.title);
+      setProposalUrl(f.proposalUrl);
+      setRootKeys(f.keys);
+      setRootVals(f.values);
+      setSnapMsg("Imported — review steps 1 and 2, then write the intent envelope yourself.");
+    } catch (e) {
+      setSnapMsg(e instanceof Error ? e.message : "Import failed.");
+    } finally {
+      setSnapBusy(false);
+    }
+  };
 
   const prefillDemo = () => {
     const d = DEMO_PROPOSAL;
@@ -196,6 +226,19 @@ export function BuildFlow() {
           Pre-fill demo proposal
         </button>
       </div>
+
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          style={{ flex: 1, minWidth: 220 }}
+          placeholder="Import from Snapshot — paste a proposal link"
+          value={snapUrl}
+          onChange={(e) => setSnapUrl(e.target.value)}
+        />
+        <button className="small" disabled={snapBusy || !snapUrl.trim()} onClick={importSnapshot}>
+          {snapBusy ? "Importing…" : "Import"}
+        </button>
+      </div>
+      {snapMsg && <p className="tiny muted" style={{ margin: 0 }}>{snapMsg}</p>}
 
       <TxProgress tx={tx} />
 
