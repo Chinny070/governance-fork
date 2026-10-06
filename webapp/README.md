@@ -3,9 +3,9 @@
 Production dApp for the Governance Fork Intelligent Contract on GenLayer
 StudioNet.
 
-- **Contract:** `0xD5A1E3b2087d439C36571B50947ddD900741f143` (StudioNet) — Stage
-  10 (steward-requested fixes, including a real enforced-duration finality
-  challenge period), commit `019630d`
+- **Contract:** `0x74e066e148A24581D17E0F8dC539cE9EC7410B8D` (StudioNet) — Stage
+  10 (steward-requested fixes, including adoption signalling, reputation and a
+  real enforced-duration finality period), commit `fe762c4`
 - **Stack:** Vite 6 · React 18 · TypeScript (strict) · `genlayer-js` 1.1.8
 - **No backend.** Reads go straight to the StudioNet RPC; writes go through an
   injected wallet (MetaMask). Exploration works with no wallet at all.

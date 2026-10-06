@@ -8,7 +8,7 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const RPC = "https://studio.genlayer.com/api";
 // Keep in sync with CONTRACT_ADDRESS in src/lib/contract.ts.
-const ADDR = "0xD5A1E3b2087d439C36571B50947ddD900741f143";
+const ADDR = "0x74e066e148A24581D17E0F8dC539cE9EC7410B8D";
 
 async function getSchema() {
   const r = await fetch(RPC, {

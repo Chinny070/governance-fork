@@ -6,10 +6,13 @@
 // finality challenge period -- gl.message_raw["datetime"] is a genuine,
 // consensus-safe on-chain timestamp on this runtime, live-proven end to
 // end; see docs/STAGE_10_STEWARD_FIXES.md section 4).
-// Contract source: commit 019630d of contracts/governance_fork.py
-// SHA-256: e02e142fb98cbab50d5e0cf582c5b5bb668dbe61f5ae81316a56a4cb5ded67ab
-// Deployed manually to GenLayer StudioNet; schema verified 36 methods
-// (17 write + 17 view + 2 admin), lock_bond the sole payable method.
+// Stage 11 (adoption signalling, creator reputation, escalated final
+// appeal; additive on Stage 10). Previous production: 0xD5A1E3b2087d439C36571B50947ddD900741f143
+// (commit 019630d) -- superseded, do not use.
+// Contract source: commit fe762c4 of contracts/governance_fork.py
+// SHA-256: 33631b6945276b40816c85a2a1921cfb8eb16a8a30f18f9ead264803829b77a7
+// Deployed manually to GenLayer StudioNet; schema verified 42 methods
+// (20 write + 20 view + 2 admin), lock_bond the sole payable method.
 //
 // Previous production address (commit 91601b2, two-step commit without a
 // real enforced duration): 0x4ACb76E0517a3Ad2d19699486595291b0089b077
@@ -19,11 +22,11 @@
 // ---------------------------------------------------------------------------
 
 export const CONTRACT_ADDRESS =
-  "0xD5A1E3b2087d439C36571B50947ddD900741f143" as const;
+  "0x74e066e148A24581D17E0F8dC539cE9EC7410B8D" as const;
 
-export const CONTRACT_SOURCE_COMMIT = "019630d" as const;
+export const CONTRACT_SOURCE_COMMIT = "fe762c4" as const;
 export const CONTRACT_SOURCE_SHA256 =
-  "e02e142fb98cbab50d5e0cf582c5b5bb668dbe61f5ae81316a56a4cb5ded67ab" as const;
+  "33631b6945276b40816c85a2a1921cfb8eb16a8a30f18f9ead264803829b77a7" as const;
 
 // genlayer-js network key (see genlayer-js/chains). StudioNet.
 export const GENLAYER_NETWORK = "studionet" as const;
