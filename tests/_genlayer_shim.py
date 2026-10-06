@@ -439,8 +439,11 @@ class _EqPrincipleNamespace:
     def strict_eq(leader_fn):
         return leader_fn()
 
+    principles_used = []  # Stage 11: records the principle passed on each call
+
     @staticmethod
     def prompt_comparative(leader_fn, principle):
+        _EqPrincipleNamespace.principles_used.append(principle)
         return leader_fn()
 
 

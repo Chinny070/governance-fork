@@ -103,6 +103,9 @@ MAX_DIMENSION_REASONING_LEN = 512
 
 RETRY_COOLDOWN_SECONDS = 3600
 CHALLENGE_WINDOW_SECONDS = 259200  # 72 hours
+# Stage 11: adoption signalling window (after a root is FAITHFUL, stakeholders
+# signal which FINALIZED_FAITHFUL fork should be adopted).
+ADOPTION_WINDOW_SECONDS = 604800  # 7 days
 MAX_RETRIES_PER_CASE = 3
 
 FORK_CREATION_BOND = 100000000000000000  # 0.1 * 10**18, provisional
@@ -939,6 +942,18 @@ _ADJ_PRINCIPLE = (
     "DOES constitute disagreement."
 )
 
+# Stage 11: escalated final appeal. The last challenge a target may receive
+# is judged under a STRICTER comparison principle than ordinary adjudication:
+# on top of identical findings, validators must also agree on the exact set of
+# evidence ids cited for every dimension. Harder to reach consensus on, so a
+# last-resort appeal can only overturn a verdict on tightly-agreed grounds.
+_ADJ_PRINCIPLE_STRICT = (
+    _ADJ_PRINCIPLE
+    + " ADDITIONALLY (escalated final appeal): for every dimension the SET of "
+    "'evidence_ids' must also be identical in both results; a differing "
+    "evidence id set DOES constitute disagreement."
+)
+
 _ADJ_SECURITY_PREAMBLE = (
     "You are a neutral semantic adjudicator for a DAO governance registry. "
     "You receive a SUBJECT (a structured governance artifact) and zero or "
@@ -1637,6 +1652,24 @@ class ConstantsView:
     paused: bool
 
 
+@allow_storage
+@dataclass
+class AdoptionInfo:
+    root_id: u256
+    opened_at: u256
+    closes_at: u256
+    closed: bool
+    adopted_fork_id: u256
+
+
+@allow_storage
+@dataclass
+class Reputation:
+    forks_faithful: u32
+    forks_not_faithful: u32
+    forks_adopted: u32
+
+
 # =========================================================================
 # Contract
 # =========================================================================
@@ -1696,6 +1729,16 @@ class Contract(gl.Contract):
     # treasury). Incremented on every slash, decremented by challenger
     # rewards and withdraw_treasury. Always <= self.balance.
     treasury_pool: u256
+
+    # Stage 11: adoption signalling + creator reputation.
+    adoption_opened_at: TreeMap[u256, u256]   # root_id -> epoch s (0/absent = not opened)
+    adoption_closed: TreeMap[u256, u256]      # root_id -> epoch s closed (0/absent = open)
+    adopted_fork: TreeMap[u256, u256]         # root_id -> adopted fork_id (0 = none)
+    adoption_signal_of: TreeMap[str, u256]    # "<root_id>:<addr_hex>" -> fork_id signalled
+    adoption_count: TreeMap[u256, u32]        # fork_id -> current signal count
+    rep_faithful: TreeMap[str, u32]           # creator addr_hex -> finalized FAITHFUL forks
+    rep_not_faithful: TreeMap[str, u32]       # ... -> finalized NOT_FAITHFUL forks
+    rep_adopted: TreeMap[str, u32]            # ... -> forks that won adoption
 
     def __init__(self):
         # Stage 6b deploy-compatibility correction: treasury/admin is bound
@@ -3454,7 +3497,14 @@ class Contract(gl.Contract):
         def _adjudicate_fn():
             return gl.nondet.exec_prompt(prompt, response_format="json")
 
-        raw = gl.eq_principle.prompt_comparative(_adjudicate_fn, _ADJ_PRINCIPLE)
+        principle = _ADJ_PRINCIPLE
+        if case.case_type == CASE_TYPE_CHALLENGE:
+            # Escalated final appeal: the last challenge a target may ever
+            # receive is judged under the stricter principle.
+            total_ch, _open = self._challenge_tally(case.target_kind, case.target_id)
+            if total_ch >= MAX_CHALLENGES_PER_TARGET:
+                principle = _ADJ_PRINCIPLE_STRICT
+        raw = gl.eq_principle.prompt_comparative(_adjudicate_fn, principle)
 
         # ---- deterministic post-processing of the consensus-agreed value ----
         ok, ordered, reason = _parse_adjudication_output(
@@ -3764,6 +3814,131 @@ class Contract(gl.Contract):
             else:
                 new_status = FORK_FINALIZED_INVALID
             self._write_fork_status_verdict(target_id, new_status, governing_vid)
+            creator_hex = fork.creator.as_hex
+            if new_status == FORK_FINALIZED_FAITHFUL:
+                self._rep_bump("faithful", creator_hex)
+            elif new_status == FORK_FINALIZED_NOT_FAITHFUL:
+                self._rep_bump("not_faithful", creator_hex)
+
+    # ---------------------------------------------------------------------
+    # Stage 11: adoption signalling + creator reputation (additive).
+    #
+    # A FAITHFUL verdict says a fork stayed true to the intent; it does not
+    # say the DAO WANTS it. After a root is final-FAITHFUL its proposer opens
+    # an adoption window (ADOPTION_WINDOW_SECONDS, timed by the transaction
+    # timestamp like the finality window). Anyone may signal ONE
+    # FINALIZED_FAITHFUL fork per root (re-signalling moves the signal).
+    # After the window anyone calls close_adoption: the most-signalled
+    # faithful fork (ties -> lowest fork id) is recorded as adopted.
+    #
+    # LIMIT, stated plainly: a signal is one address, one signal -- not
+    # token- or stake-weighted -- so it is Sybil-able. It is a coordination
+    # signal, not a binding vote; weighting is future work.
+    # ---------------------------------------------------------------------
+
+    def _rep_bump(self, which, key):
+        # Dispatch on a tag rather than passing a storage map around.
+        if which == "faithful":
+            cur = int(self.rep_faithful[key]) if key in self.rep_faithful else 0
+            self.rep_faithful[key] = u32(cur + 1)
+        elif which == "not_faithful":
+            cur = int(self.rep_not_faithful[key]) if key in self.rep_not_faithful else 0
+            self.rep_not_faithful[key] = u32(cur + 1)
+        else:
+            cur = int(self.rep_adopted[key]) if key in self.rep_adopted else 0
+            self.rep_adopted[key] = u32(cur + 1)
+
+    @gl.public.write
+    def open_adoption(self, root_id: u256) -> None:
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if root_id not in self.roots:
+            raise gl.vm.UserError("root not found")
+        root = self.roots[root_id]
+        if root.envelope_status != ENVELOPE_FAITHFUL:
+            raise gl.vm.UserError("root must be finalized FAITHFUL before adoption opens")
+        if gl.message.sender_address != root.proposer:
+            raise gl.vm.UserError("only the root's proposer may open adoption")
+        if root_id in self.adoption_opened_at and int(self.adoption_opened_at[root_id]) > 0:
+            raise gl.vm.UserError("adoption already opened")
+        self.adoption_opened_at[root_id] = self._now_epoch_seconds()
+
+    @gl.public.write
+    def signal_adoption(self, fork_id: u256) -> None:
+        if self.paused:
+            raise gl.vm.UserError("paused")
+        if fork_id not in self.forks:
+            raise gl.vm.UserError("fork not found")
+        fork = self.forks[fork_id]
+        if fork.status != FORK_FINALIZED_FAITHFUL:
+            raise gl.vm.UserError("only a finalized FAITHFUL fork can be signalled")
+        rid = fork.root_id
+        if rid not in self.adoption_opened_at or int(self.adoption_opened_at[rid]) == 0:
+            raise gl.vm.UserError("adoption is not open for this root")
+        now = int(self._now_epoch_seconds())
+        if now >= int(self.adoption_opened_at[rid]) + ADOPTION_WINDOW_SECONDS:
+            raise gl.vm.UserError("adoption window has closed")
+        key = str(int(rid)) + ":" + gl.message.sender_address.as_hex
+        if key in self.adoption_signal_of and int(self.adoption_signal_of[key]) > 0:
+            prev = self.adoption_signal_of[key]
+            if prev == fork_id:
+                raise gl.vm.UserError("already signalled for this fork")
+            self.adoption_count[prev] = u32(int(self.adoption_count[prev]) - 1)
+        self.adoption_signal_of[key] = fork_id
+        cur = int(self.adoption_count[fork_id]) if fork_id in self.adoption_count else 0
+        self.adoption_count[fork_id] = u32(cur + 1)
+
+    @gl.public.write
+    def close_adoption(self, root_id: u256) -> None:
+        if root_id not in self.adoption_opened_at or int(self.adoption_opened_at[root_id]) == 0:
+            raise gl.vm.UserError("adoption was never opened")
+        if root_id in self.adoption_closed and int(self.adoption_closed[root_id]) > 0:
+            raise gl.vm.UserError("adoption already closed")
+        now = int(self._now_epoch_seconds())
+        if now < int(self.adoption_opened_at[root_id]) + ADOPTION_WINDOW_SECONDS:
+            raise gl.vm.UserError("adoption window has not elapsed")
+        best = 0
+        best_count = 0
+        if root_id in self.forks_by_root:
+            for fid in self.forks_by_root[root_id]:
+                if self.forks[fid].status != FORK_FINALIZED_FAITHFUL:
+                    continue
+                c = int(self.adoption_count[fid]) if fid in self.adoption_count else 0
+                if c > best_count:
+                    best_count = c
+                    best = int(fid)
+        self.adoption_closed[root_id] = u256(now)
+        self.adopted_fork[root_id] = u256(best)
+        if best > 0:
+            self._rep_bump("adopted", self.forks[u256(best)].creator.as_hex)
+
+    @gl.public.view
+    def get_adoption(self, root_id: u256) -> AdoptionInfo:
+        if root_id not in self.roots:
+            raise gl.vm.UserError("root not found")
+        opened = int(self.adoption_opened_at[root_id]) if root_id in self.adoption_opened_at else 0
+        closed_at = int(self.adoption_closed[root_id]) if root_id in self.adoption_closed else 0
+        adopted = int(self.adopted_fork[root_id]) if root_id in self.adopted_fork else 0
+        return AdoptionInfo(
+            root_id=root_id,
+            opened_at=u256(opened),
+            closes_at=u256(opened + ADOPTION_WINDOW_SECONDS if opened > 0 else 0),
+            closed=closed_at > 0,
+            adopted_fork_id=u256(adopted),
+        )
+
+    @gl.public.view
+    def get_fork_signal_count(self, fork_id: u256) -> u32:
+        return self.adoption_count[fork_id] if fork_id in self.adoption_count else u32(0)
+
+    @gl.public.view
+    def get_reputation(self, creator_hex: str) -> Reputation:
+        k = creator_hex.lower()
+        return Reputation(
+            forks_faithful=self.rep_faithful[k] if k in self.rep_faithful else u32(0),
+            forks_not_faithful=self.rep_not_faithful[k] if k in self.rep_not_faithful else u32(0),
+            forks_adopted=self.rep_adopted[k] if k in self.rep_adopted else u32(0),
+        )
 
     # ---------------------------------------------------------------------
     # Stage 9: GEN bond economics
