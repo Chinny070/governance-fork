@@ -3814,7 +3814,7 @@ class Contract(gl.Contract):
             else:
                 new_status = FORK_FINALIZED_INVALID
             self._write_fork_status_verdict(target_id, new_status, governing_vid)
-            creator_hex = fork.creator.as_hex
+            creator_hex = fork.creator.as_hex.lower()  # as_hex is checksummed (mixed case) on the real runtime
             if new_status == FORK_FINALIZED_FAITHFUL:
                 self._rep_bump("faithful", creator_hex)
             elif new_status == FORK_FINALIZED_NOT_FAITHFUL:
@@ -3910,7 +3910,7 @@ class Contract(gl.Contract):
         self.adoption_closed[root_id] = u256(now)
         self.adopted_fork[root_id] = u256(best)
         if best > 0:
-            self._rep_bump("adopted", self.forks[u256(best)].creator.as_hex)
+            self._rep_bump("adopted", self.forks[u256(best)].creator.as_hex.lower())
 
     @gl.public.view
     def get_adoption(self, root_id: u256) -> AdoptionInfo:

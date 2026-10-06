@@ -44,10 +44,20 @@ lever it controls.)
 
 ## Verification status
 
-- 412 Python tests pass (11 new in `tests/test_stage_11.py`); 14/14 static checks.
-- Frontend: typecheck, lint, 60 unit tests (4 new for Snapshot parsing/mapping).
-- Live (StudioNet): contract deploys and loads; new views respond. NOT live-
-  proven: a full adoption round (needs a FAITHFUL root plus faithful forks, which
-  synthetic evidence cannot reach — covered by deterministic tests with harness
-  status flips instead), and the Snapshot hub fetch (unreachable from the dev
-  sandbox; parsing/mapping unit-tested only).
+- 412 Python tests pass (11 in `tests/test_stage_11.py`); 14/14 static checks.
+- Frontend: typecheck, lint, 60 unit tests (4 for Snapshot parsing/mapping).
+- **Live full run on a StudioNet test copy** (windows shortened to 45s; same
+  source otherwise): EIP-1559 root -> FAITHFUL -> finalized after the enforced
+  wait; forks #1 and #3 FAITHFUL and finalized (fork #2 UNCLEAR -- correctly
+  not signal-eligible); adoption opened; a signal after the window closed was
+  rejected; `close_adoption` recorded the winner; a second close was rejected.
+- **Bug found live and fixed:** creator reputation always read zero. The runtime's
+  `Address.as_hex` is checksummed (mixed case), while `get_reputation` lowercases
+  its lookup key, so they never matched. Keys are now lowercased on write, and
+  the test shim returns mixed-case `as_hex` so the unit tests catch this class of
+  bug (3 tests fail on the old code). The fix itself is unit-tested; it has not
+  been re-run live.
+- NOT live-proven: moving a signal between forks and multi-signal tallies (the
+  45s test window was shorter than the ~40s per-transaction latency, so only one
+  signal landed before it closed); the Snapshot hub fetch (unreachable from the
+  dev sandbox; parsing/mapping unit-tested only).

@@ -80,7 +80,10 @@ class Address(str):
         # Matches the local-reference pattern (gl.message.sender_address.as_hex
         # returns a str). Address values in shim land are already hex-shaped
         # strings, so we just return self.
-        return str(self)
+        # The real runtime returns a CHECKSUMMED (mixed-case) string; model
+        # that so code that forgets to normalize case fails here too.
+        t = str(self)
+        return t[:2] + t[2:].upper()
 
 
 # ---------------------------------------------------------------------------
