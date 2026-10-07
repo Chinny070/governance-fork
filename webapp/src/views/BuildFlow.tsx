@@ -84,7 +84,7 @@ export function BuildFlow() {
     setSnapBusy(true);
     setSnapMsg(null);
     try {
-      const f = mapSnapshot(await fetchSnapshotProposal(parsed.id));
+      const f = mapSnapshot(await fetchSnapshotProposal(parsed));
       setDaoMode("new");
       setDaoName(f.daoName);
       setDaoUrl(f.daoUrl);
