@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   formatGen,
+  readableError,
   shortAddr,
   shortHex,
   isEmptyHex,
   sameAddr,
-  readableError,
   isUndeterminedError,
 } from "./format";
 
@@ -26,6 +26,19 @@ describe("formatGen", () => {
   it("accepts string and number", () => {
     expect(formatGen("100000000000000000")).toBe("0.1 GEN");
     expect(formatGen(0)).toBe("0 GEN");
+  });
+});
+
+describe("readableError", () => {
+  it("explains a rejected adjudication answer and how to proceed", () => {
+    const msg = readableError(
+      new Error('reverted: adjudication output rejected: decisive finding cites no evidence'),
+    );
+    expect(msg).toContain("decisive finding cites no evidence");
+    expect(msg).toContain("click Run adjudication again");
+  });
+  it("explains a StudioNet rate limit", () => {
+    expect(readableError(new Error("Failed to fetch"))).toContain("500 requests per hour");
   });
 });
 

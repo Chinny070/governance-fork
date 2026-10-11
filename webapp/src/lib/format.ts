@@ -63,6 +63,13 @@ export function readableError(e: unknown): string {
               return String(e);
             }
           })();
+  // The semantic step ran, but the contract's strict format check rejected the
+  // AI's answer, so nothing was committed (same as an Undetermined run).
+  if (/adjudication output rejected/i.test(raw)) {
+    return "The AI's answer didn't pass the contract's strict format check (" +
+      (raw.match(/adjudication output rejected:?\s*([^"\\]+)/i)?.[1]?.trim() ?? "malformed output") +
+      "), so nothing was committed. This happens now and then: click Run adjudication again. Failed runs don't use up retries.";
+  }
   // StudioNet rate-limits to ~500 requests/hour per IP; the refusal carries no
   // CORS header, so the browser reports it as a generic "Failed to fetch".
   if (/rate limit|failed to fetch|unknown rpc error/i.test(raw)) {
