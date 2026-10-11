@@ -576,7 +576,7 @@ class CreateForkEndToEndTests(unittest.TestCase):
             *_body_fields(title="F", params=[("allocation", "50000"), ("duration", "6 months")]),
         )
         by_root = c.list_forks_of_root(rid, shim.u256(0), shim.u32(50))
-        by_parent = c.list_forks_of_parent(rid, shim.u256(0), shim.u32(50))
+        by_parent = c.list_forks_of_parent(gf.PARENT_KIND_ROOT, rid, shim.u256(0), shim.u32(50))
         self.assertEqual([int(x) for x in by_root.items], [int(fid)])
         self.assertEqual([int(x) for x in by_parent.items], [int(fid)])
 
@@ -594,7 +594,7 @@ class CreateForkEndToEndTests(unittest.TestCase):
             *_body_fields(title="Short", params=[("allocation", "100000"), ("duration", "3 months")]),
         )
         self.assertNotEqual(int(fid_a), int(fid_b))
-        page = c.list_forks_of_parent(rid, shim.u256(0), shim.u32(50))
+        page = c.list_forks_of_parent(gf.PARENT_KIND_ROOT, rid, shim.u256(0), shim.u32(50))
         self.assertEqual({int(x) for x in page.items}, {int(fid_a), int(fid_b)})
 
 

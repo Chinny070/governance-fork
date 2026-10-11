@@ -241,5 +241,37 @@ class ParserCitationRuleTests(unittest.TestCase):
         self.assertIn("cites no evidence", reason)
 
 
+class ParentIndexTests(unittest.TestCase):
+    def test_root_and_fork_with_same_id_do_not_share_a_child_slot(self):
+        # Live bug: root #1 and its child fork #1 shared one index slot, so
+        # fork #1 listed itself as its own child.
+        c, rid, fids, _ = _root_with_two_faithful_forks()
+        self.assertEqual(int(rid), int(fids[0]))  # the colliding ids
+        under_root = c.list_forks_of_parent(gf.PARENT_KIND_ROOT, rid, shim.u256(0), shim.u32(50))
+        self.assertEqual([int(x) for x in under_root.items], [int(f) for f in fids])
+        under_fork = c.list_forks_of_parent(gf.PARENT_KIND_FORK, fids[0], shim.u256(0), shim.u32(50))
+        self.assertEqual(list(under_fork.items), [])
+        # a child of fork #1 appears only under the fork, not under the root
+        f1 = c.get_fork(fids[0])
+        shim.set_sender(shim.Address("0x" + "d4" * 20))
+        child = c.create_fork(
+            fids[0], gf.PARENT_KIND_FORK, f1.body_fingerprint,
+            *h._delta_fields([("allocation", gf.CLAIM_NARROWED, "50000", "25000")]),
+            *h._body_fields(title="Child", params=(("allocation", "25000"),)),
+        )
+        shim.reset_message_context()
+        under_fork = c.list_forks_of_parent(gf.PARENT_KIND_FORK, fids[0], shim.u256(0), shim.u32(50))
+        self.assertEqual([int(x) for x in under_fork.items], [int(child)])
+        under_root = c.list_forks_of_parent(gf.PARENT_KIND_ROOT, rid, shim.u256(0), shim.u32(50))
+        self.assertNotIn(int(child), [int(x) for x in under_root.items])
+
+    def test_bad_parent_kind_and_missing_parent_rejected(self):
+        c, rid, fids, _ = _root_with_two_faithful_forks()
+        with self.assertRaises(UserError):
+            c.list_forks_of_parent("NOPE", rid, shim.u256(0), shim.u32(10))
+        with self.assertRaises(UserError):
+            c.list_forks_of_parent(gf.PARENT_KIND_FORK, shim.u256(99), shim.u256(0), shim.u32(10))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,10 +71,12 @@ export const listRootsByDao = (daoId: bigint, cursor = 0n, limit = PAGE) =>
 export const listForksOfRoot = (rootId: bigint, cursor = 0n, limit = PAGE) =>
   view<PageIds>("list_forks_of_root", [rootId, cursor, limit]);
 export const listForksOfParent = (
+  parentKind: "PARENT_ROOT" | "PARENT_FORK",
   parentId: bigint,
   cursor = 0n,
   limit = PAGE,
-) => view<PageIds>("list_forks_of_parent", [parentId, cursor, limit]);
+) =>
+  view<PageIds>("list_forks_of_parent", [parentKind, parentId, cursor, limit]);
 export const listEvidenceOfCase = (
   caseId: bigint,
   cursor = 0n,

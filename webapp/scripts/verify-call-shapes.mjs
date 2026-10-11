@@ -42,7 +42,7 @@ const EXPECTED = {
   list_daos: 2,
   list_root_proposals_by_dao: 3,
   list_forks_of_root: 3,
-  list_forks_of_parent: 3,
+  list_forks_of_parent: 4,
   list_evidence_of_case: 3,
   list_challenges: 4,
   get_verdict_history: 4,

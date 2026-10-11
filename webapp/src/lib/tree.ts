@@ -148,14 +148,16 @@ export async function buildRootTree(rootId: bigint): Promise<TreeNode | null> {
 
   async function attach(parentId: bigint, parent: TreeNode) {
     if (parent.depth > 12) return;
-    const childIds = await collectAll((c) => listForksOfParent(parentId, c));
     const wantKind = parent.kind === "root" ? "PARENT_ROOT" : "PARENT_FORK";
+    const childIds = await collectAll((c) =>
+      listForksOfParent(wantKind, parentId, c),
+    );
     let ordinal = 0;
     for (const fid of childIds) {
       const fork = await getFork(fid);
       if (!fork) continue;
-      // The contract indexes children by the bare parent id, so root #N and
-      // fork #N share one slot. Keep only genuine children of THIS parent.
+      // Defence in depth: the contract now keys children by kind+id, but the
+      // earlier deployments shared one slot for root #N and fork #N.
       if (fork.parent_kind !== wantKind || BigInt(fork.parent_id) !== parentId) continue;
       ordinal += 1;
       const child: TreeNode = {

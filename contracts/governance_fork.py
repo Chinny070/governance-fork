@@ -493,6 +493,12 @@ def _normalize_url(url: str) -> str:
     return scheme + "://" + host_part.lower() + tail
 
 
+def _parent_key(parent_kind: str, parent_id) -> str:
+    # forks_by_parent index key. Root ids and fork ids are separate sequences,
+    # so the kind must be part of the key.
+    return parent_kind + ":" + str(int(parent_id))
+
+
 def _contrib_key(case_id_int: int, sender_hex: str) -> str:
     # Deterministic composite key for the per-contributor community-evidence
     # counter. Uses ":" as separator; the address hex will not contain ":",
@@ -1701,7 +1707,9 @@ class Contract(gl.Contract):
     # Indexes for bounded tree walks
     roots_by_dao: TreeMap[u256, DynArray[u256]]
     forks_by_root: TreeMap[u256, DynArray[u256]]
-    forks_by_parent: TreeMap[u256, DynArray[u256]]
+    # Keyed "<parent_kind>:<parent_id>" so root #N and fork #N never share a
+    # slot (they used to, which made fork #1 list itself as its own child).
+    forks_by_parent: TreeMap[str, DynArray[u256]]
     evidence_by_case: TreeMap[u256, DynArray[u256]]
     verdicts_by_fork: TreeMap[u256, DynArray[u256]]
     verdicts_by_root: TreeMap[u256, DynArray[u256]]
@@ -2318,8 +2326,9 @@ class Contract(gl.Contract):
         if new_depth > MAX_DEPTH_PER_ROOT:
             raise gl.vm.UserError("MAX_DEPTH_PER_ROOT exceeded")
         # Per-parent children cap
-        if parent_id in self.forks_by_parent:
-            if len(self.forks_by_parent[parent_id]) >= MAX_CHILDREN_PER_PARENT:
+        parent_key = _parent_key(parent_kind, parent_id)
+        if parent_key in self.forks_by_parent:
+            if len(self.forks_by_parent[parent_key]) >= MAX_CHILDREN_PER_PARENT:
                 raise gl.vm.UserError("MAX_CHILDREN_PER_PARENT reached")
         # Per-root total fork cap
         if resolved_root_id in self.forks_by_root:
@@ -2400,9 +2409,9 @@ class Contract(gl.Contract):
         if resolved_root_id not in self.forks_by_root:
             self.forks_by_root[resolved_root_id] = []
         self.forks_by_root[resolved_root_id].append(fork_id)
-        if parent_id not in self.forks_by_parent:
-            self.forks_by_parent[parent_id] = []
-        self.forks_by_parent[parent_id].append(fork_id)
+        if parent_key not in self.forks_by_parent:
+            self.forks_by_parent[parent_key] = []
+        self.forks_by_parent[parent_key].append(fork_id)
         # Increment parent's child_count if parent is a fork
         if parent_kind == PARENT_KIND_FORK:
             pf = self.forks[parent_id]
@@ -4279,14 +4288,20 @@ class Contract(gl.Contract):
 
     @gl.public.view
     def list_forks_of_parent(
-        self, parent_id: u256, cursor: u256, limit: u32
+        self, parent_kind: str, parent_id: u256, cursor: u256, limit: u32
     ) -> PageIds:
-        # Parent may be a root or a fork. If neither exists, error.
-        if parent_id not in self.roots and parent_id not in self.forks:
-            raise gl.vm.UserError("parent not found")
-        if parent_id not in self.forks_by_parent:
+        if parent_kind == PARENT_KIND_ROOT:
+            if parent_id not in self.roots:
+                raise gl.vm.UserError("parent not found")
+        elif parent_kind == PARENT_KIND_FORK:
+            if parent_id not in self.forks:
+                raise gl.vm.UserError("parent not found")
+        else:
+            raise gl.vm.UserError("invalid parent_kind")
+        parent_key = _parent_key(parent_kind, parent_id)
+        if parent_key not in self.forks_by_parent:
             return PageIds(items=[], next_cursor=u256(0))
-        arr = self.forks_by_parent[parent_id]
+        arr = self.forks_by_parent[parent_key]
         picked, nxt = _paginate_ids(arr, int(cursor), int(limit))
         items = []
         for v in picked:
