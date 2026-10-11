@@ -63,6 +63,11 @@ export function readableError(e: unknown): string {
               return String(e);
             }
           })();
+  // StudioNet rate-limits to ~500 requests/hour per IP; the refusal carries no
+  // CORS header, so the browser reports it as a generic "Failed to fetch".
+  if (/rate limit|failed to fetch|unknown rpc error/i.test(raw)) {
+    return "StudioNet isn't answering right now. It limits each IP to 500 requests per hour, so wait a couple of minutes and refresh (avoid repeated reloads).";
+  }
   // Common GenLayer patterns.
   const m =
     raw.match(/UserError\(["']?(.+?)["']?\)/)?.[1] ??

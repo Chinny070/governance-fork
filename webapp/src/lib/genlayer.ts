@@ -101,13 +101,39 @@ function isTransientRpc(e: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// StudioNet allows ~500 requests/hour per IP. A page makes many reads and the
+// same read is often requested by several components, so identical reads are
+// de-duplicated while in flight and cached briefly. Any write clears the cache
+// so the UI re-reads fresh state after a transaction.
+const READ_TTL_MS = 12_000;
+const readCache = new Map<string, { at: number; p: Promise<unknown> }>();
+export function clearReadCache() {
+  readCache.clear();
+}
+const cacheKey = (fn: string, args: unknown[]) =>
+  fn + ":" + JSON.stringify(args, (_k, v) => (typeof v === "bigint" ? v.toString() + "n" : v));
+
 export async function view<T>(
   functionName: string,
   args: unknown[] = [],
 ): Promise<T> {
+  const key = cacheKey(functionName, args);
+  const hit = readCache.get(key);
+  if (hit && Date.now() - hit.at < READ_TTL_MS) return hit.p as Promise<T>;
+  const p = viewUncached<T>(functionName, args);
+  readCache.set(key, { at: Date.now(), p });
+  p.catch(() => readCache.delete(key));
+  return p;
+}
+
+async function viewUncached<T>(
+  functionName: string,
+  args: unknown[],
+): Promise<T> {
   const c = readClient() as any;
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  // Few retries: each failed retry also spends rate-limit budget.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       return (await c.readContract({
         address: CONTRACT_ADDRESS,
@@ -117,7 +143,7 @@ export async function view<T>(
     } catch (e) {
       lastErr = e;
       if (!isTransientRpc(e)) throw e;
-      await sleep(400 * (attempt + 1));
+      await sleep(1000 * (attempt + 1) ** 2);
     }
   }
   throw lastErr;
@@ -254,6 +280,7 @@ export async function writeAndWait(
   args: unknown[],
   valueWei = 0n,
 ): Promise<WriteResult> {
+  clearReadCache();
   const c = client as any;
   const hash: string = await c.writeContract({
     address: CONTRACT_ADDRESS,
@@ -264,9 +291,10 @@ export async function writeAndWait(
   const receipt = await c.waitForTransactionReceipt({
     hash,
     status: TransactionStatus.ACCEPTED,
-    interval: 4000,
-    retries: 120,
+    interval: 6000,
+    retries: 80,
   });
+  clearReadCache();
   const { returnValue } = classifyReceipt(receipt);
   return { hash, returnValue, receipt };
 }
