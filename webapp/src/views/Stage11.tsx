@@ -1,5 +1,12 @@
 // Stage 11 UI: verify-a-verdict, fork diff, adoption signalling, reputation.
 import { useEffect, useState } from "react";
+import {
+  EvidenceForm,
+  emptyEvidenceRow,
+  evidenceRowsToArrays,
+  type EvidenceRow,
+} from "../components/EvidenceForm";
+import { DEMO_PROPOSAL } from "../lib/demo";
 import * as api from "../lib/api";
 import { getActiveWriteClient as g } from "../lib/activeClient";
 import { FORK_STATUS } from "../lib/enums";
@@ -316,6 +323,66 @@ export function AdoptionSection({
               Close adoption
             </button>
           )}
+        </div>
+      </Guarded>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------ fork evidence submit */
+
+/** A fork starts as a DRAFT with no case. The creator submits its evidence
+ *  here, which opens the fork's evidence case (then close -> fetch -> seal). */
+export function ForkEvidenceSection({
+  t,
+  act,
+  busy,
+}: {
+  t: TargetView;
+  act: Act;
+  busy: boolean;
+}) {
+  const [rows, setRows] = useState<EvidenceRow[]>([emptyEvidenceRow()]);
+  if (t.kind !== "fork" || t.evidenceCaseId > 0n) return null;
+  const arrays = evidenceRowsToArrays(rows);
+  const ready =
+    arrays.evidenceUrls.length > 0 &&
+    arrays.relevanceClaims.every((x) => x.length > 0) &&
+    arrays.authorityClaims.every((x) => x.length > 0) &&
+    arrays.temporalMarkers.every((x) => x.length > 0);
+  const useDemo = () =>
+    setRows(
+      DEMO_PROPOSAL.evidence.map((e) => ({
+        url: e.url,
+        evidenceClass: e.evidenceClass,
+        relevanceClaim: e.relevanceClaim,
+        authorityClaim: e.authorityClaim,
+        temporalMarker: e.temporalMarker,
+        renderProfile: e.renderProfile,
+      })),
+    );
+  return (
+    <div className="section">
+      <SectionHead eyebrow="Fork evidence" title="Submit evidence to open the case" />
+      <p className="muted tiny" style={{ marginTop: 0 }}>
+        Only the fork's creator can submit its first evidence. This opens the
+        evidence case; then close, fetch each source, and seal it below.
+      </p>
+      <EvidenceForm rows={rows} onChange={setRows} />
+      <Guarded>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button
+            className="primary small"
+            disabled={busy || !ready}
+            onClick={() =>
+              act(() => api.submitForkEvidence(g(), { forkId: t.id, ...arrays }))
+            }
+          >
+            Submit evidence
+          </button>
+          <button className="small" type="button" onClick={useDemo}>
+            Use demo evidence
+          </button>
         </div>
       </Guarded>
     </div>

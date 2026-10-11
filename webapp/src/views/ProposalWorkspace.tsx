@@ -39,6 +39,7 @@ import { ForkCreatorPanel } from "./ForkCreator";
 import {
   AdoptionSection,
   ForkDiff,
+  ForkEvidenceSection,
   ReputationChip,
   VerifyEvidence,
 } from "./Stage11";
@@ -112,6 +113,10 @@ export function ProposalWorkspace({
       {t.kind === "fork" && <WhatChanged t={t} />}
 
       {t.kind === "fork" && <ForkDiff t={t} />}
+
+      {t.kind === "fork" && (
+        <ForkEvidenceSection t={t} act={act} busy={tx.busy} />
+      )}
 
       <EvidenceSection t={t} act={act} busy={tx.busy} />
 
@@ -404,7 +409,7 @@ function EvidenceSection({
         <Empty>
           {t.kind === "root"
             ? "Created when the intent envelope is submitted."
-            : "Submit fork evidence from the Build flow to open the case."}
+            : "Submit the fork's evidence in the section above to open the case."}
         </Empty>
       ) : (
         <>
