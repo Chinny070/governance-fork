@@ -61,3 +61,14 @@ lever it controls.)
   45s test window was shorter than the ~40s per-transaction latency, so only one
   signal landed before it closed); the Snapshot hub fetch (unreachable from the
   dev sandbox; parsing/mapping unit-tested only).
+
+## Known issue (contract indexing), worked around in the UI
+
+`forks_by_parent` is keyed by the bare parent id, so root #N and fork #N share
+one slot. With root #1 and fork #1 (a child of root #1) both present, fork #1
+appeared as its own child, and the proposal tree rendered it nested to the depth
+guard. The UI now keeps only children whose `parent_kind` and `parent_id` really
+match the parent (`webapp/src/lib/tree.ts`). The contract-side fix is to key the
+index by kind + id (e.g. "PARENT_ROOT:1"); it also makes `MAX_CHILDREN_PER_PARENT`
+count per parent rather than per shared id. That needs a redeploy, so it should
+ship with the next contract change.
