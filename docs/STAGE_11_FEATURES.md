@@ -72,3 +72,15 @@ match the parent (`webapp/src/lib/tree.ts`). The contract-side fix is to key the
 index by kind + id (e.g. "PARENT_ROOT:1"); it also makes `MAX_CHILDREN_PER_PARENT`
 count per parent rather than per shared id. That needs a redeploy, so it should
 ship with the next contract change.
+
+## Known issue (adjudication parser), fixed in source, NOT yet deployed
+
+Found live on the Stage 11 contract: fork adjudications were repeatedly rolled
+back with "decisive finding cites no evidence". `INTERNAL_CONSISTENCY` judges
+whether the fork agrees with itself, so the model often cites no evidence for it,
+and the strict parser rejected the whole run. Source now exempts only that
+dimension from the citation rule (all others still must cite) and tells the model
+so. Tests: `ParserCitationRuleTests`. The deployed contract
+(`0x0CEAe8...9299`) still has the old rule; workaround there is to re-run
+`run_adjudication` (failed runs do not spend retries; only Re-arm does).
+Ships with the next redeploy, together with the `forks_by_parent` key fix above.

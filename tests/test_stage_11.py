@@ -216,5 +216,30 @@ class EscalatedAppealTests(unittest.TestCase):
         self.assertNotEqual(gf._ADJ_PRINCIPLE, gf._ADJ_PRINCIPLE_STRICT)
 
 
+class ParserCitationRuleTests(unittest.TestCase):
+    def _out(self, empty_dim):
+        dims = []
+        for name in gf._FORK_DIMS:
+            ev = [] if name == empty_dim else [1]
+            dims.append({"name": name, "finding": gf.FINDING_SATISFIED,
+                         "evidence_ids": ev, "rationale": "ok"})
+        return {"schema_version": gf.ADJ_SCHEMA_FORK, "case_id": 5, "dimensions": dims}
+
+    def test_internal_consistency_may_cite_no_evidence(self):
+        ok, _ordered, reason = gf._parse_adjudication_output(
+            self._out(gf.FORK_DIM_INTERNAL_CONSISTENCY), 5,
+            gf.ADJ_SCHEMA_FORK, gf._FORK_DIMS, [1],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_other_decisive_dimensions_still_must_cite_evidence(self):
+        ok, _ordered, reason = gf._parse_adjudication_output(
+            self._out(gf.FORK_DIM_EVIDENCE_SUPPORT), 5,
+            gf.ADJ_SCHEMA_FORK, gf._FORK_DIMS, [1],
+        )
+        self.assertFalse(ok)
+        self.assertIn("cites no evidence", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

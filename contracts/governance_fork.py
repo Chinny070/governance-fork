@@ -978,8 +978,9 @@ _ADJ_OUTPUT_INSTRUCTIONS = (
     "chars, single line, no newlines>\"}]}\n"
     "Include EVERY listed dimension exactly once. 'evidence_ids' must be a "
     "subset of the evidence ids shown above, with no duplicates. A SATISFIED "
-    "or NOT_SATISFIED finding MUST cite at least one evidence id; an UNCLEAR "
-    "finding may cite none. Add no extra keys anywhere."
+    "or NOT_SATISFIED finding MUST cite at least one evidence id, except "
+    "INTERNAL_CONSISTENCY, which may cite none; an UNCLEAR finding may cite "
+    "none. Add no extra keys anywhere."
 )
 
 _ADJ_TASK_ROOT = (
@@ -1290,7 +1291,15 @@ def _parse_adjudication_output(raw, expected_case_id, schema_version, required_d
             return (False, [], "rationale too long")
         if "\n" in rationale or "\r" in rationale:
             return (False, [], "rationale contains newline")
-        if finding != FINDING_UNCLEAR and len(norm) < 1:
+        # INTERNAL_CONSISTENCY judges whether the fork agrees with ITSELF
+        # (body vs delta vs reasoning), so it has no natural evidence to cite.
+        # Requiring a citation made the model fail the whole run (seen live:
+        # repeated "decisive finding cites no evidence" rollbacks).
+        if (
+            finding != FINDING_UNCLEAR
+            and len(norm) < 1
+            and name != FORK_DIM_INTERNAL_CONSISTENCY
+        ):
             return (False, [], "decisive finding cites no evidence")
         by_name[name] = (finding, norm, rationale)
     ordered = []
