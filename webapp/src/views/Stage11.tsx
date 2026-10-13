@@ -245,13 +245,13 @@ export function AdoptionSection({
               : "Not opened"
         }
       />
-      <p className="muted tiny" style={{ marginTop: 0 }}>
-        A FAITHFUL verdict says a fork stayed true to the intent — not that the
-        DAO wants it. Anyone may signal one finalized-FAITHFUL fork; after the
-        window the most-signalled fork is adopted. Signals are one-address-one-
-        signal (not stake-weighted), so treat them as coordination, not a
-        binding vote.
-      </p>
+      <Note tone="coral">
+        Non-binding community signal. This is not an official decision of the
+        DAO: any wallet address can signal (one signal per address, not weighted
+        by stake or membership), so the count can be inflated by one person using
+        many addresses. A FAITHFUL verdict says a fork stayed true to the
+        original intent, not that the DAO has authorized or adopted it.
+      </Note>
       {data.loading && !data.data && (
         <div className="row muted">
           <Spinner /> Reading adoption state…

@@ -90,6 +90,9 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
         r"web\.get\(",
         r"gl\.eq_principle\.prompt_non_comparative",
         r"(?<!emit_)transfer\(",
+        # Live-proven NOT to credit wallets on StudioNet (Stage 12): the plain
+        # contract-to-contract message. Payouts must use the EVM interface.
+        r"gl\.get_contract_at\([^)]*\)\.emit_transfer",
     ]
     hits = []
     for pat in banned:
@@ -105,14 +108,14 @@ def check_no_prohibited_calls(source: str) -> tuple[bool, str]:
         "gl.eq_principle.prompt_comparative(",
         "gl.nondet.exec_prompt(",
         'response_format="json"',
-        "gl.get_contract_at(",
+        "gl.evm.contract_interface",
         ".emit_transfer(value=",
     ):
         if needle not in code:
             return False, f"expected sanctioned call/arg not found: {needle}"
     return True, (
         "render/strict_eq + prompt_comparative/exec_prompt(json) + "
-        "get_contract_at/emit_transfer present; web.get / "
+        "evm contract_interface/emit_transfer present; web.get / "
         "prompt_non_comparative / bare transfer absent"
     )
 
@@ -144,21 +147,21 @@ def check_lock_bond_is_only_payable(source: str) -> tuple[bool, str]:
                 path.append(cur.id)
             if tuple(reversed(path)) == ("gl", "public", "write", "payable"):
                 payable.append(item.name)
-    if payable != ["lock_bond"]:
-        return False, f"payable methods must be exactly ['lock_bond'], got {payable}"
+    if payable != ["lock_bond", "fund_treasury"]:
+        return False, f"payable methods must be exactly ['lock_bond', 'fund_treasury'], got {payable}"
     # lock_bond must not revert for a policy reason once value is attached
     # (a reverted payable call traps its value on this runtime). Its body
     # must not check self.paused and must contain exactly one raise (the
     # zero-value guard, which traps nothing).
     for item in contract.body:
-        if isinstance(item, ast.FunctionDef) and item.name == "lock_bond":
+        if isinstance(item, ast.FunctionDef) and item.name in ("lock_bond", "fund_treasury"):
             seg = ast.get_source_segment(source, item) or ""
             if "self.paused" in seg:
-                return False, "lock_bond must not be paused-gated (would trap value)"
+                return False, f"{item.name} must not be paused-gated (would trap value)"
             raises = sum(1 for n in ast.walk(item) if isinstance(n, ast.Raise))
             if raises != 1:
-                return False, f"lock_bond has {raises} raise statements, expected 1 (zero-value guard)"
-    return True, "lock_bond is the only payable method; not paused-gated; single zero-value guard"
+                return False, f"{item.name} has {raises} raise statements, expected 1 (zero-value guard)"
+    return True, "exactly lock_bond + fund_treasury are payable; neither paused-gated; each has a single zero-value guard"
 
 
 def check_semantic_calls_unwrapped(source: str) -> tuple[bool, str]:
@@ -263,7 +266,7 @@ def extract_abi(source: str) -> tuple[list[str], list[str], list[str]]:
 def check_abi_counts(source: str) -> tuple[bool, str]:
     writes, views, admins = extract_abi(source)
     total = len(writes) + len(views) + len(admins)
-    expected_write = 20  # Stage 6b: +close_evidence, +fetch_evidence,
+    expected_write = 25  # Stage 6b: +close_evidence, +fetch_evidence,
                          # +seal_evidence, +abort_case, -freeze_evidence,
                          # -freeze_case (11 - 2 + 4 = 13).
                          # Stage 7: +run_adjudication (-> 14).
@@ -273,9 +276,12 @@ def check_abi_counts(source: str) -> tuple[bool, str]:
                          # Stage 10: +open_finality_window (-> 17).
                          # Stage 11: +open_adoption +signal_adoption
                          # +close_adoption (-> 20).
-    expected_view = 20   # Stage 9: +list_bonds_by_target (16 -> 17).
+                         # Stage 12: +confirm_payout +report_payout_not_received
+                         # +resolve_payout +retry_payout +fund_treasury (-> 25).
+    expected_view = 23   # Stage 9: +list_bonds_by_target (16 -> 17).
                          # Stage 11: +get_adoption +get_fork_signal_count
                          # +get_reputation (-> 20).
+                         # Stage 12: +get_payout +get_payout_of_bond +get_reserves (-> 23).
     expected_admin = 2
     expected_total = expected_write + expected_view + expected_admin
     ok = (

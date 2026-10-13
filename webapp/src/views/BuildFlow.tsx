@@ -263,6 +263,11 @@ export function BuildFlow() {
           {step === 1 && (
             <div>
               <SectionHead eyebrow="01" title="Governance body" />
+              <p className="muted tiny" style={{ marginTop: 0 }}>
+                Registering a DAO or importing a proposal here creates a
+                community record. It is not authenticated by, or authorized by,
+                the DAO itself.
+              </p>
               <div className="row" style={{ marginBottom: 14 }}>
                 <label className="row" style={{ gap: 6, textTransform: "none", letterSpacing: 0 }}>
                   <input

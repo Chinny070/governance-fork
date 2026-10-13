@@ -183,6 +183,12 @@ export function AboutPanel() {
             action is non-payable and consumes a pre-locked bond.
           </li>
           <li>
+            <strong>Community records, not official decisions:</strong> any
+            wallet can register a DAO name and import a proposal; the DAO has
+            not authenticated it. Adoption signals count wallet addresses, not
+            stake or membership, so they are non-binding popularity signals.
+          </li>
+          <li>
             <strong>Real challenge windows:</strong> finalizing is two
             transactions — opening the window stamps the on-chain
             transaction timestamp, and finalize enforces a real 72-hour

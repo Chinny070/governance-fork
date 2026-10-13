@@ -4,6 +4,7 @@ import {
   ContractRevertError,
   UndeterminedError,
   hexToBytes,
+  assertFinalizedSuccess,
 } from "./genlayer";
 
 // Fixtures modelled on real StudioNet receipts from the contract's e2e
@@ -110,5 +111,26 @@ describe("hexToBytes", () => {
   });
   it("handles the empty bytes marker", () => {
     expect(hexToBytes("0x").length).toBe(0);
+  });
+});
+
+describe("assertFinalizedSuccess", () => {
+  const fin = (leaderExec: string, status = "FINALIZED") => ({
+    status_name: status,
+    consensus_data: {
+      leader_receipt: [
+        { mode: "leader", execution_result: leaderExec },
+        { mode: "validator", execution_result: "ERROR" }, // idle after quorum
+      ],
+    },
+  });
+  it("accepts a FINALIZED receipt whose leader succeeded, ignoring idle validators", () => {
+    expect(() => assertFinalizedSuccess(fin("SUCCESS"))).not.toThrow();
+  });
+  it("rejects a receipt that is only ACCEPTED", () => {
+    expect(() => assertFinalizedSuccess(fin("SUCCESS", "ACCEPTED"))).toThrow(/not FINALIZED/);
+  });
+  it("rejects a leader execution that did not succeed", () => {
+    expect(() => assertFinalizedSuccess(fin("ERROR"))).toThrow(/not SUCCESS/);
   });
 });

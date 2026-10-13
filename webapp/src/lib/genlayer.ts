@@ -267,6 +267,35 @@ export function classifyReceipt(receipt: unknown): { returnValue?: string } {
   );
 }
 
+/**
+ * Authoritative-finality check: the receipt must be FINALIZED and the leader's
+ * GenVM execution must have succeeded (not merely been accepted).
+ */
+export function assertFinalizedSuccess(receipt: unknown): void {
+  const r = receipt as Record<string, unknown> | undefined;
+  const status = String(r?.status_name ?? r?.statusName ?? "").toUpperCase();
+  if (status !== "FINALIZED") {
+    throw new Error(
+      `Transaction reached "${status || "unknown"}" but not FINALIZED; refusing to report it as completed.`,
+    );
+  }
+  // Read the LEADER's result only: validators that went idle after quorum
+  // legitimately report an ERROR ("cancelled after quorum").
+  const entries = (r?.consensus_data as { leader_receipt?: unknown } | undefined)
+    ?.leader_receipt;
+  const leader = Array.isArray(entries)
+    ? ((entries as Record<string, unknown>[]).find((e) => e?.mode === "leader") ??
+      (entries as Record<string, unknown>[])[0])
+    : undefined;
+  const exec =
+    typeof leader?.execution_result === "string"
+      ? (leader.execution_result as string)
+      : undefined;
+  if (exec && exec.toUpperCase() !== "SUCCESS") {
+    throw new Error(`GenVM execution result was ${exec}, not SUCCESS.`);
+  }
+}
+
 // ---- write call + receipt --------------------------------------------
 export interface WriteResult {
   hash: string;
@@ -290,12 +319,15 @@ export async function writeAndWait(
   });
   const receipt = await c.waitForTransactionReceipt({
     hash,
-    status: TransactionStatus.ACCEPTED,
+    // FINALIZED, not ACCEPTED: ACCEPTED can still be appealed/rotated, so
+    // report an operation as completed only once consensus has finalized it.
+    status: TransactionStatus.FINALIZED,
     interval: 6000,
-    retries: 80,
+    retries: 160,
   });
   clearReadCache();
-  const { returnValue } = classifyReceipt(receipt);
+  const { returnValue } = classifyReceipt(receipt); // throws on revert / Undetermined
+  assertFinalizedSuccess(receipt);
   return { hash, returnValue, receipt };
 }
 

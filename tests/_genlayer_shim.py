@@ -209,10 +209,12 @@ _CONTRACT_ADDR = Address("0x" + "c0" * 20)
 class _MockChain:
     def __init__(self):
         self._bal = {}
+        self.fail_next = 0
         self.current_contract = str(_CONTRACT_ADDR)
 
     def reset(self):
         self._bal = {}
+        self.fail_next = 0
         self.current_contract = str(_CONTRACT_ADDR)
         _CLOCK_STATE["epoch"] = _CLOCK_BASE_EPOCH
 
@@ -242,6 +244,13 @@ class _MockChain:
             self._bal[s] = self._bal.get(s, 0) - amt
         self._bal[str(contract)] = self._bal.get(str(contract), 0) + amt
 
+    def burn(self, frm, amount):
+        amt = int(amount)
+        f = str(frm)
+        if self._bal.get(f, 0) < amt:
+            raise _UserError("insufficient balance for transfer")
+        self._bal[f] = self._bal.get(f, 0) - amt
+
     def transfer(self, frm, to, amount):
         amt = int(amount)
         f = str(frm)
@@ -268,7 +277,33 @@ class _AccountHandle:
         return u256(_CHAIN.balance_of(self._addr))
 
     def emit_transfer(self, value, on="finalized"):
+        if _CHAIN.fail_next > 0:
+            # Simulated lost payment: value leaves the contract, nobody is
+            # credited (what StudioNet does for a plain get_contract_at wallet).
+            _CHAIN.fail_next -= 1
+            _CHAIN.burn(_CHAIN.current_contract, int(value))
+            return
         _CHAIN.transfer(_CHAIN.current_contract, self._addr, int(value))
+
+
+class _EvmNamespace:
+    """gl.evm: only contract_interface is modelled. On the real StudioNet this
+    is the transfer path that CREDITS wallets; gl.get_contract_at(...)
+    .emit_transfer does not (see contracts/probe/payout_probe.py). The mock
+    ledger treats both as a balance move, and records which API was used so
+    tests can assert the contract uses the wallet-crediting one."""
+
+    @staticmethod
+    def contract_interface(cls):
+        def factory(addr):
+            _EVM_TRANSFER_LOG.append("evm")
+            return _AccountHandle(addr)
+
+        factory.__name__ = cls.__name__
+        return factory
+
+
+_EVM_TRANSFER_LOG = []
 
 
 class _VMNamespace:
@@ -460,6 +495,7 @@ class _GLNamespace:
         self.mock_web = _MockWebRegistry()
         self.mock_semantic = _MockSemanticRegistry()
         self.nondet = _NondetNamespace(self.mock_web, self.mock_semantic)
+        self.evm = _EvmNamespace
         self.storage = _StorageNamespace
         self.eq_principle = _EqPrincipleNamespace()
 
@@ -664,3 +700,9 @@ def get_gl():
 
 def get_user_error():
     return _UserError
+
+
+def fail_next_transfer(n=1):
+    """Test helper: the next n outgoing transfers leave the contract but credit
+    nobody (a lost payment)."""
+    _CHAIN.fail_next = int(n)

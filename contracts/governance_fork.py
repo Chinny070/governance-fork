@@ -8,6 +8,20 @@ import hashlib
 import json
 
 
+# Outgoing native GEN must go through an EVM-style interface. Live-verified on
+# StudioNet (contracts/probe/payout_probe.py): gl.get_contract_at(<wallet>)
+# .emit_transfer(...) takes the GEN out of this contract but the child message
+# finalizes as "Contract <wallet> not found" and the wallet is never credited,
+# while this interface credited a never-seen wallet and a funded wallet exactly.
+@gl.evm.contract_interface
+class _EvmRecipient:
+    class View:
+        pass
+
+    class Write:
+        pass
+
+
 # =========================================================================
 # Live-runtime correction: DynArray[T]() cannot be called directly, and
 # gl.storage.inmem_allocate(DynArray[T]) does not work on this pinned
@@ -366,6 +380,16 @@ BOND_UNSETTLED = "UNSETTLED"
 BOND_SETTLED_FULL_REFUND = "SETTLED_FULL_REFUND"
 BOND_SETTLED_PARTIAL_SLASH = "SETTLED_PARTIAL_SLASH"
 BOND_SETTLED_CHALLENGER_REWARD = "SETTLED_CHALLENGER_REWARD"
+
+# Stage 12: payout ledger. Every outgoing GEN payment is recorded so a failed
+# or unconfirmed one is recoverable without ever sending twice.
+PAYOUT_SENT = "SENT"              # transfer emitted, delivery not yet confirmed
+PAYOUT_CONFIRMED = "CONFIRMED"    # recipient or admin confirmed delivery (final)
+PAYOUT_DISPUTED = "DISPUTED"      # recipient reports it did not arrive
+PAYOUT_RETRYABLE = "RETRYABLE"    # admin attested non-delivery; may be re-sent
+PAYOUT_SRC_BOND = "BOND"
+PAYOUT_SRC_TREASURY = "TREASURY"
+MAX_PAYOUT_ATTEMPTS = 3
 
 # Target kind (for unified challenge/verdict endpoints)
 TARGET_KIND_FORK = "FORK"
@@ -1628,6 +1652,30 @@ class Bond:
 
 @allow_storage
 @dataclass
+class Payout:
+    recipient: Address
+    amount: u256
+    source_kind: str
+    source_id: u256
+    status: str
+    attempts: u32
+    created_at: u256
+    updated_at: u256
+
+
+@allow_storage
+@dataclass
+class Reserves:
+    contract_balance: u256
+    locked_bonds: u256
+    treasury_pool: u256
+    in_flight_payouts: u256
+    obligations: u256
+    shortfall: u256
+
+
+@allow_storage
+@dataclass
 class PageIds:
     items: DynArray[u256]
     next_cursor: u256
@@ -1747,6 +1795,14 @@ class Contract(gl.Contract):
     # rewards and withdraw_treasury. Always <= self.balance.
     treasury_pool: u256
 
+    # Stage 12: payout ledger + reserve accounting. Invariant when nothing has
+    # been lost: balance >= locked_bonds + treasury_pool + in_flight_payouts.
+    payouts: TreeMap[u256, Payout]
+    payout_of_bond: TreeMap[u256, u256]
+    next_payout_id: u256
+    locked_bonds: u256
+    in_flight_payouts: u256
+
     # Stage 11: adoption signalling + creator reputation.
     adoption_opened_at: TreeMap[u256, u256]   # root_id -> epoch s (0/absent = not opened)
     adoption_closed: TreeMap[u256, u256]      # root_id -> epoch s closed (0/absent = open)
@@ -1790,6 +1846,9 @@ class Contract(gl.Contract):
         self.next_challenge_id = u256(1)
         self.next_bond_id = u256(1)
         self.treasury_pool = u256(0)
+        self.next_payout_id = u256(1)
+        self.locked_bonds = u256(0)
+        self.in_flight_payouts = u256(0)
 
     # ---------------------------------------------------------------------
     # Admin (minimal skeleton; withdrawal-safe pause behavior is Stage 11)
@@ -4029,7 +4088,20 @@ class Contract(gl.Contract):
             slash_amount=u256(0),
             reward_amount=u256(0),
         )
+        self.locked_bonds = u256(int(self.locked_bonds) + int(v))
         return bond_id
+
+    @gl.public.write.payable
+    def fund_treasury(self) -> None:
+        # Second (and last) payable entry point: lets anyone top up the treasury
+        # pool, which funds failed-payment retries. Same safety rule as
+        # lock_bond: NOT paused-gated and the only raise is the zero-value
+        # guard, so it can never revert once value is attached (a reverted
+        # payable call keeps the value on this runtime).
+        v = gl.message.value
+        if int(v) == 0:
+            raise gl.vm.UserError("value required")
+        self.treasury_pool = u256(int(self.treasury_pool) + int(v))
 
     def _consume_bond(self, bond_id, purpose, expected_amount):
         # Non-payable path: safe to revert. Returns the Bond, unmodified.
@@ -4081,7 +4153,7 @@ class Contract(gl.Contract):
             purpose=bond.purpose,
             settlement_kind=kind,
             settled=True,
-            settled_at=u256(0),
+            settled_at=self._now_epoch_seconds(),
             challenge_id=bond.challenge_id,
             refund_amount=u256(int(refund)),
             slash_amount=u256(int(slash)),
@@ -4148,7 +4220,8 @@ class Contract(gl.Contract):
         # rejected submission, or simply unused) is always a 100% refund.
         if int(bond.target_id) == 0:
             self._write_bond_settled(bond_id, bond, BOND_SETTLED_FULL_REFUND, amt, 0, 0)
-            gl.get_contract_at(bond.owner).emit_transfer(value=u256(amt))
+            self.locked_bonds = u256(int(self.locked_bonds) - amt)
+            self._send_payout(bond.owner, amt, PAYOUT_SRC_BOND, bond_id)
             return
 
         final_verdict = self._target_final_verdict_str(bond)
@@ -4193,9 +4266,160 @@ class Contract(gl.Contract):
             self.treasury_pool = u256(int(self.treasury_pool) + slash)
         if reward > 0:
             self.treasury_pool = u256(int(self.treasury_pool) - reward)
+        self.locked_bonds = u256(int(self.locked_bonds) - amt)
         payout = refund + reward
         if payout > 0:
-            gl.get_contract_at(bond.owner).emit_transfer(value=u256(int(payout)))
+            self._send_payout(bond.owner, payout, PAYOUT_SRC_BOND, bond_id)
+
+    # ---------------------------------------------------------------------
+    # Stage 12: payout ledger and reconciliation
+    #
+    # settle_bond / withdraw_treasury no longer fire-and-forget: every outgoing
+    # payment gets a ledger record (SENT) and its value stays counted as
+    # in-flight until delivery is confirmed. If it did not arrive, the
+    # recipient disputes it and the admin attests non-delivery, after which a
+    # retry is allowed only while the contract balance still covers EVERY
+    # outstanding obligation -- so a payment can never be sent twice and never
+    # dips into another participant's funds. Delivery can only be attested by
+    # a party (recipient/admin); a contract cannot observe a wallet balance.
+    # ---------------------------------------------------------------------
+
+    def _send_payout(self, recipient, amount, source_kind, source_id):
+        amt = int(amount)
+        pid = self.next_payout_id
+        self.next_payout_id = u256(int(pid) + 1)
+        now = self._now_epoch_seconds()
+        self.payouts[pid] = Payout(
+            recipient=recipient,
+            amount=u256(amt),
+            source_kind=source_kind,
+            source_id=u256(int(source_id)),
+            status=PAYOUT_SENT,
+            attempts=u32(1),
+            created_at=now,
+            updated_at=now,
+        )
+        if source_kind == PAYOUT_SRC_BOND:
+            self.payout_of_bond[source_id] = pid
+        self.in_flight_payouts = u256(int(self.in_flight_payouts) + amt)
+        _EvmRecipient(recipient).emit_transfer(value=u256(amt))
+        return pid
+
+    def _payout_party_check(self, payout):
+        sender = gl.message.sender_address
+        if sender != payout.recipient and sender != self.treasury_addr:
+            raise gl.vm.UserError("only the recipient or the treasury admin may do this")
+
+    def _set_payout(self, pid, payout, status, attempts):
+        self.payouts[pid] = Payout(
+            recipient=payout.recipient,
+            amount=payout.amount,
+            source_kind=payout.source_kind,
+            source_id=payout.source_id,
+            status=status,
+            attempts=u32(int(attempts)),
+            created_at=payout.created_at,
+            updated_at=self._now_epoch_seconds(),
+        )
+
+    def _obligations(self):
+        # What must still be in the contract: unsettled bonds + the treasury
+        # pool. A payout already sent is NOT counted here (the value has left);
+        # in_flight_payouts is tracked separately as an audit figure.
+        return int(self.locked_bonds) + int(self.treasury_pool)
+
+    @gl.public.write
+    def confirm_payout(self, payout_id: u256) -> None:
+        # The recipient (or the admin, after checking the wallet) confirms the
+        # GEN arrived. Final: releases the in-flight reserve, no retry possible.
+        if payout_id not in self.payouts:
+            raise gl.vm.UserError("payout not found")
+        po = self.payouts[payout_id]
+        self._payout_party_check(po)
+        if po.status != PAYOUT_SENT and po.status != PAYOUT_DISPUTED:
+            raise gl.vm.UserError("payout is not awaiting confirmation")
+        self.in_flight_payouts = u256(int(self.in_flight_payouts) - int(po.amount))
+        self._set_payout(payout_id, po, PAYOUT_CONFIRMED, po.attempts)
+
+    @gl.public.write
+    def report_payout_not_received(self, payout_id: u256) -> None:
+        # Only the recipient. Flags the payment for the admin to review; it
+        # does NOT allow a retry by itself (a recipient could be mistaken or
+        # dishonest), so a duplicate payment is impossible from this call.
+        if payout_id not in self.payouts:
+            raise gl.vm.UserError("payout not found")
+        po = self.payouts[payout_id]
+        if gl.message.sender_address != po.recipient:
+            raise gl.vm.UserError("only the recipient may report non-receipt")
+        if po.status != PAYOUT_SENT:
+            raise gl.vm.UserError("only an unconfirmed payout can be reported")
+        self._set_payout(payout_id, po, PAYOUT_DISPUTED, po.attempts)
+
+    @gl.public.write
+    def resolve_payout(self, payout_id: u256, delivered: bool) -> None:
+        # Treasury admin attests the outcome after checking the recipient's
+        # balance on the explorer. delivered=True -> CONFIRMED (final);
+        # delivered=False -> RETRYABLE (one more send is then permitted).
+        if gl.message.sender_address != self.treasury_addr:
+            raise gl.vm.UserError("only the treasury admin may resolve a payout")
+        if payout_id not in self.payouts:
+            raise gl.vm.UserError("payout not found")
+        po = self.payouts[payout_id]
+        if po.status != PAYOUT_SENT and po.status != PAYOUT_DISPUTED:
+            raise gl.vm.UserError("payout is not awaiting resolution")
+        if delivered:
+            self.in_flight_payouts = u256(int(self.in_flight_payouts) - int(po.amount))
+            self._set_payout(payout_id, po, PAYOUT_CONFIRMED, po.attempts)
+        else:
+            self._set_payout(payout_id, po, PAYOUT_RETRYABLE, po.attempts)
+
+    @gl.public.write
+    def retry_payout(self, payout_id: u256) -> None:
+        if payout_id not in self.payouts:
+            raise gl.vm.UserError("payout not found")
+        po = self.payouts[payout_id]
+        self._payout_party_check(po)
+        if po.status != PAYOUT_RETRYABLE:
+            raise gl.vm.UserError("payout is not retryable (admin must attest non-delivery first)")
+        if int(po.attempts) >= MAX_PAYOUT_ATTEMPTS:
+            raise gl.vm.UserError("maximum payout attempts reached")
+        # The first attempt's value has already left the contract, so a resend
+        # is NEW outflow. It is funded only from the protocol's own treasury
+        # pool (slashed bonds and top-ups via fund_treasury) -- never from
+        # other participants' locked bonds -- and the balance must still cover
+        # every remaining obligation afterwards. If the pool cannot cover it,
+        # the claim stays RETRYABLE (queued, never erased) until it can.
+        amt = int(po.amount)
+        if int(self.treasury_pool) < amt:
+            raise gl.vm.UserError("treasury pool cannot cover this retry; fund it with fund_treasury")
+        self.treasury_pool = u256(int(self.treasury_pool) - amt)
+        if int(self.balance) < self._obligations() + amt:
+            raise gl.vm.UserError("contract balance does not cover all obligations; retry blocked")
+        self._set_payout(payout_id, po, PAYOUT_SENT, int(po.attempts) + 1)
+        _EvmRecipient(po.recipient).emit_transfer(value=po.amount)
+
+    @gl.public.view
+    def get_payout(self, payout_id: u256) -> Payout:
+        if payout_id not in self.payouts:
+            raise gl.vm.UserError("payout not found")
+        return self.payouts[payout_id]
+
+    @gl.public.view
+    def get_payout_of_bond(self, bond_id: u256) -> u256:
+        return self.payout_of_bond[bond_id] if bond_id in self.payout_of_bond else u256(0)
+
+    @gl.public.view
+    def get_reserves(self) -> Reserves:
+        bal = int(self.balance)
+        obl = self._obligations()
+        return Reserves(
+            contract_balance=u256(bal),
+            locked_bonds=self.locked_bonds,
+            treasury_pool=self.treasury_pool,
+            in_flight_payouts=self.in_flight_payouts,
+            obligations=u256(obl),
+            shortfall=u256(obl - bal if obl > bal else 0),
+        )
 
     @gl.public.write
     def withdraw_treasury(self, amount: u256) -> None:
@@ -4209,7 +4433,7 @@ class Contract(gl.Contract):
         if a > int(self.treasury_pool):
             raise gl.vm.UserError("amount exceeds treasury pool")
         self.treasury_pool = u256(int(self.treasury_pool) - a)
-        gl.get_contract_at(self.treasury_addr).emit_transfer(value=u256(a))
+        self._send_payout(self.treasury_addr, a, PAYOUT_SRC_TREASURY, u256(0))
 
     # ---------------------------------------------------------------------
     # View ABI (Stage 2: signatures only; bodies raise UserError)

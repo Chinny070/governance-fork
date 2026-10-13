@@ -191,6 +191,11 @@ function CaseHeader({ t }: { t: TargetView }) {
           </Tag>
         )}
       </div>
+      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+        <Tag tone="neutral" dot={false} title="Anyone can import a proposal and register a DAO name here. The DAO has not authenticated or authorized this record.">
+          Community import · not verified by the DAO
+        </Tag>
+      </div>
       {t.kind === "fork" && (
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
           <span className="tiny faint">creator</span>
