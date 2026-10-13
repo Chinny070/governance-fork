@@ -101,15 +101,23 @@ the transaction, not shim values.
 
 ## Real 72-hour finalization on the production contract
 
-On the production contract the demo root (EIP-1559, source text in
-`docs/demo/eip-1559-proposal.md`) was imported, judged FAITHFUL, and its
-challenge window opened:
+Forks can only be created after the root is finalized FAITHFUL, and that takes
+the full 72 hours on production. So the production proof uses the root itself.
+All of this happened on `0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670`:
 
-- window opened at chain time `1791933872` = **2026-10-13 23:24:32 UTC**
-- `finalize` becomes possible at **2026-10-16 23:24:32 UTC** (+259,200 s)
-- `get_constants` on the production contract returns `challenge_window_seconds = 259200`
+| Time (UTC) | Event |
+|---|---|
+| 2026-10-13 23:24:32 | Demo root (EIP-1559) judged FAITHFUL; first challenge window opened |
+| 2026-10-13 23:46 | `finalize` refused: "challenge window not yet elapsed (1257s of 259200s required)" |
+| 2026-10-13 23:48 | A challenge (ground `CONSTRAINT_INCOMPLETE`) was filed during the window. `finalize` was then refused ("call open_finality_window first") and the root's status moved to `ENVELOPE_CHALLENGE_OPEN` |
+| 2026-10-13 23:51 | Challenge re-adjudicated: `RESOLVED_UNCHANGED` (the original verdict stands) |
+| 2026-10-13 23:51:57 | Window reopened, which restarts the clock |
+| **2026-10-16 23:51:57** | **Earliest time `finalize` can succeed** |
 
-Until then `finalize` is rejected with "challenge window not yet elapsed". The
-remaining time is visible in the app's Root view and through
-`get_root_proposal(1)`. The finalizing transaction and its result will be added
-here after that time. Nothing in this section has been simulated.
+Read it yourself: `get_constants` returns `challenge_window_seconds = 259200`,
+and `get_root_proposal(1)` returns `finality_window_opened_at` (chain time
+`1791935517` for the current window).
+
+The finalizing transaction is not part of this document yet. It can only be
+sent after the time above, and its result will be added here then. Nothing in
+this section has been simulated.
