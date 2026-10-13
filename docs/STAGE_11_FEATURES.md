@@ -44,7 +44,7 @@ lever it controls.)
 
 ## Verification status
 
-Production: `0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96` (commit `bb7b88d`,
+Production: `0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96` (commit `ff0f222`,
 SHA-256 `266d46d2...48e7`, real 72h / 7d windows). Its demo root
 (EIP-1559, with the proposal text in `docs/demo/eip-1559-proposal.md` as its
 canonical source) was adjudicated FAITHFUL and its real 72-hour finality window

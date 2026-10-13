@@ -15,7 +15,7 @@
 // Stage 11 final: INTERNAL_CONSISTENCY citation fix + parent-index key fix
 // (previous deployment 0x0CEAe8A2c86aC2DBf5b5CC5B4CC67f0e9b5D9299,
 // commit 586ab80) -- superseded, do not use.
-// Contract source: commit bb7b88d of contracts/governance_fork.py
+// Contract source: commit ff0f222 of contracts/governance_fork.py
 // SHA-256: 266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7
 // Deployed manually to GenLayer StudioNet; schema verified 42 methods
 // (20 write + 20 view + 2 admin), lock_bond the sole payable method.
@@ -30,7 +30,7 @@
 export const CONTRACT_ADDRESS =
   "0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96" as const;
 
-export const CONTRACT_SOURCE_COMMIT = "bb7b88d" as const;
+export const CONTRACT_SOURCE_COMMIT = "ff0f222" as const;
 export const CONTRACT_SOURCE_SHA256 =
   "266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7" as const;
 

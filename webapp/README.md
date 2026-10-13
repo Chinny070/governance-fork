@@ -5,7 +5,7 @@ StudioNet.
 
 - **Contract:** `0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96` (StudioNet) — Stage
   10 (steward-requested fixes, including adoption signalling, reputation and a
-  real enforced-duration finality period), commit `bb7b88d`
+  real enforced-duration finality period), commit `ff0f222`
 - **Stack:** Vite 6 · React 18 · TypeScript (strict) · `genlayer-js` 1.1.8
 - **No backend.** Reads go straight to the StudioNet RPC; writes go through an
   injected wallet (MetaMask). Exploration works with no wallet at all.
