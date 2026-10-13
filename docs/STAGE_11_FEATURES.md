@@ -44,23 +44,38 @@ lever it controls.)
 
 ## Verification status
 
-- 412 Python tests pass (11 in `tests/test_stage_11.py`); 14/14 static checks.
-- Frontend: typecheck, lint, 60 unit tests (4 for Snapshot parsing/mapping).
-- **Live full run on a StudioNet test copy** (windows shortened to 45s; same
-  source otherwise): EIP-1559 root -> FAITHFUL -> finalized after the enforced
-  wait; forks #1 and #3 FAITHFUL and finalized (fork #2 UNCLEAR -- correctly
-  not signal-eligible); adoption opened; a signal after the window closed was
-  rejected; `close_adoption` recorded the winner; a second close was rejected.
-- **Bug found live and fixed:** creator reputation always read zero. The runtime's
-  `Address.as_hex` is checksummed (mixed case), while `get_reputation` lowercases
-  its lookup key, so they never matched. Keys are now lowercased on write, and
-  the test shim returns mixed-case `as_hex` so the unit tests catch this class of
-  bug (3 tests fail on the old code). The fix itself is unit-tested; it has not
-  been re-run live.
-- NOT live-proven: moving a signal between forks and multi-signal tallies (the
-  45s test window was shorter than the ~40s per-transaction latency, so only one
-  signal landed before it closed); the Snapshot hub fetch (unreachable from the
-  dev sandbox; parsing/mapping unit-tested only).
+Production: `0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96` (commit `bb7b88d`,
+SHA-256 `266d46d2...48e7`, real 72h / 7d windows). Its demo root
+(EIP-1559, with the proposal text in `docs/demo/eip-1559-proposal.md` as its
+canonical source) was adjudicated FAITHFUL and its real 72-hour finality window
+opened 2026-10-13 06:35:32 UTC (finalize unlocks 2026-10-16 06:35:32 UTC).
+
+**Full live circle on a StudioNet copy of the identical source** (only the
+timers shortened: 45s finality, 600s adoption). 24 checks passed:
+
+- root adjudicated FAITHFUL; finalize before the window rejected
+  ("challenge window not yet elapsed (42s of 45s required)"); finalized after it
+- two forks adjudicated FAITHFUL and finalized (again rejected when early)
+- reputation reads back correctly for a checksummed (mixed-case) address
+- parent index: children of the root exclude a grandchild; a fork's only child is
+  that child, and the fork no longer lists itself
+- adoption: close before opening rejected; only the proposer can open; a
+  non-finalized fork cannot be signalled; the same fork twice rejected; four
+  signals with one voter moving theirs tallied correctly (1 / 3); close before the
+  window rejected; a signal after the window rejected; the most-signalled fork won;
+  a second close rejected
+- winner reputation shows 1 adopted + 1 faithful; unknown address reads zero
+
+Notes from the run: one "early finalize" on a fork was not rejected only because
+the chain was slow enough that the 45s window had really elapsed (a test-timing
+artifact, not a defect). The adjudicator answered UNCLEAR on
+`DIMENSION_CLASSIFICATION` for earlier demo drafts because no source stated which
+dimensions were mutable; the demo now carries its own proposal text that does.
+
+Other: 416 Python tests, 14/14 static checks; frontend typecheck, lint, 63 unit
+tests (Snapshot parsing/mapping, error messages). Snapshot import verified against
+the live hub (off-chain) and `api.snapshot.box` (on-chain) with real links.
+NOT run live: the Snapshot import flow end to end through to an on-chain root.
 
 ## Fixed: parent index collision
 
@@ -78,7 +93,4 @@ back with "decisive finding cites no evidence". `INTERNAL_CONSISTENCY` judges
 whether the fork agrees with itself, so the model often cites no evidence for it,
 and the strict parser rejected the whole run. Source now exempts only that
 dimension from the citation rule (all others still must cite) and tells the model
-so. Tests: `ParserCitationRuleTests`. The deployed contract
-(`0x0CEAe8...9299`) still has the old rule; workaround there is to re-run
-`run_adjudication` (failed runs do not spend retries; only Re-arm does).
-Ships with the next redeploy, together with the `forks_by_parent` key fix above.
+so. Tests: `ParserCitationRuleTests`. Deployed in the production contract above.

@@ -12,8 +12,11 @@
 // Stage 11 fix: creator-reputation keys lowercased (previous deployment
 // 0x74e066e148A24581D17E0F8dC539cE9EC7410B8D, commit fe762c4,
 // always read zero reputation) -- superseded, do not use.
-// Contract source: commit 586ab80 of contracts/governance_fork.py
-// SHA-256: 64cd82bfcafcea208523b5b46f1c9a257b9d443bb31483288fd57f15e1f44aaf
+// Stage 11 final: INTERNAL_CONSISTENCY citation fix + parent-index key fix
+// (previous deployment 0x0CEAe8A2c86aC2DBf5b5CC5B4CC67f0e9b5D9299,
+// commit 586ab80) -- superseded, do not use.
+// Contract source: commit bb7b88d of contracts/governance_fork.py
+// SHA-256: 266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7
 // Deployed manually to GenLayer StudioNet; schema verified 42 methods
 // (20 write + 20 view + 2 admin), lock_bond the sole payable method.
 //
@@ -25,11 +28,11 @@
 // ---------------------------------------------------------------------------
 
 export const CONTRACT_ADDRESS =
-  "0x0CEAe8A2c86aC2DBf5b5CC5B4CC67f0e9b5D9299" as const;
+  "0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96" as const;
 
-export const CONTRACT_SOURCE_COMMIT = "586ab80" as const;
+export const CONTRACT_SOURCE_COMMIT = "bb7b88d" as const;
 export const CONTRACT_SOURCE_SHA256 =
-  "64cd82bfcafcea208523b5b46f1c9a257b9d443bb31483288fd57f15e1f44aaf" as const;
+  "266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7" as const;
 
 // genlayer-js network key (see genlayer-js/chains). StudioNet.
 export const GENLAYER_NETWORK = "studionet" as const;

@@ -8,6 +8,7 @@ import { HexChip, Note } from "../components/ui";
 import { Guarded } from "../components/Guarded";
 import { TxProgress } from "../components/TxProgress";
 import { ArrayInput } from "../components/ArrayInput";
+import { DEMO_FORK } from "../lib/demo";
 
 interface DeltaRow {
   dimension_name: string;
@@ -89,6 +90,26 @@ export function ForkCreatorPanel({
         </button>
       ) : (
         <div className="stack">
+          <div className="row">
+            <button
+              type="button"
+              className="small"
+              title="Fills in the example fork of the EIP-1559 demo proposal (priority tip 2 to 3 gwei)"
+              onClick={() => {
+                setTitle(DEMO_FORK.title);
+                setSummary(DEMO_FORK.summary);
+                setReasoning(DEMO_FORK.reasoning);
+                setPKeys(DEMO_FORK.params.map((p) => p[0]));
+                setPVals(DEMO_FORK.params.map((p) => p[1]));
+                setDeltas(DEMO_FORK.delta.map((d) => ({ ...d })));
+              }}
+            >
+              Pre-fill demo fork
+            </button>
+            <span className="tiny faint">
+              Only matches the EIP-1559 demo proposal.
+            </span>
+          </div>
           <div className="field">
             <label>Fork title</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} />
