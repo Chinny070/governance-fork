@@ -28,15 +28,15 @@ https://github.com/Chinny070/governance-fork
 
 **Deployed contract (StudioNet)**
 
-`0xbA06003F2C254232E4D440B89425abc7Afd4c11A`
+`0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670`
 chain 61999 · RPC https://studio.genlayer.com/api
-Explorer: https://genlayer-explorer.vercel.app/address/0xbA06003F2C254232E4D440B89425abc7Afd4c11A
+Explorer: https://explorer-studio.genlayer.com/address/0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670
 
 **Contract source / integrity**
 
-`contracts/governance_fork.py` @ commit `004dbd4`
-SHA-256 `dfe6ebc85cbb38ae1d7a4dcc07924af0facaa819c87289e4fe838c12e7c6e5f5`
-ABI: 16 write + 17 view + 2 admin (35 methods)
+`contracts/governance_fork.py` @ commit `b415fc3`
+SHA-256 `dadeafe186b0396be16ede9b8c93c51bcb6d67ec888ee4717e0def9031ca1d74`
+ABI: 25 write + 23 view + 2 admin (50 methods)
 
 ---
 

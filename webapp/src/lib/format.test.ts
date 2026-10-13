@@ -44,8 +44,8 @@ describe("readableError", () => {
 
 describe("address / hex helpers", () => {
   it("shortens addresses", () => {
-    expect(shortAddr("0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96")).toBe(
-      "0x2165…6d96",
+    expect(shortAddr("0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670")).toBe(
+      "0x4aC1…5670",
     );
     expect(shortAddr(null)).toBe("—");
   });

@@ -4,7 +4,7 @@ A full run of the production contract through the dApp, using a real governance
 proposal: **ratifying the Arbitrum Constitution**.
 
 - Live dApp: `https://chinny070.github.io/governance-fork/`
-- Contract: `0xbA06003F2C254232E4D440B89425abc7Afd4c11A` (StudioNet)
+- Contract: `0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670` (StudioNet; the walkthrough below was first recorded on an earlier deployment, the steps are unchanged)
 - You need MetaMask with **GenLayer StudioNet** added and a small amount of test
   GEN (the app's "Switch / add network" button configures the chain for you).
 

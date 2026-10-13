@@ -15,10 +15,15 @@
 // Stage 11 final: INTERNAL_CONSISTENCY citation fix + parent-index key fix
 // (previous deployment 0x0CEAe8A2c86aC2DBf5b5CC5B4CC67f0e9b5D9299,
 // commit 586ab80) -- superseded, do not use.
-// Contract source: commit ff0f222 of contracts/governance_fork.py
-// SHA-256: 266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7
-// Deployed manually to GenLayer StudioNet; schema verified 42 methods
-// (20 write + 20 view + 2 admin), lock_bond the sole payable method.
+// Stage 12 final (payout ledger + reserves, wallet-crediting transfers via
+// the EVM interface, relevance-aware evidence excerpts with a PARTIAL flag).
+// Previous deployment 0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96 (commit
+// ff0f222; transfers did not credit wallets) -- superseded, do not use.
+// Contract source: commit b415fc3 of contracts/governance_fork.py
+// SHA-256: dadeafe186b0396be16ede9b8c93c51bcb6d67ec888ee4717e0def9031ca1d74
+// Check it yourself: node scripts/verify-deployment.mjs <address>
+// Deployed to GenLayer StudioNet; schema 50 methods (25 write + 23 view +
+// 2 admin), lock_bond and fund_treasury the payable methods.
 //
 // Previous production address (commit 91601b2, two-step commit without a
 // real enforced duration): 0x4ACb76E0517a3Ad2d19699486595291b0089b077
@@ -28,11 +33,11 @@
 // ---------------------------------------------------------------------------
 
 export const CONTRACT_ADDRESS =
-  "0x21654715Ad6960dB7d9b88cB8f7F7fb045C16d96" as const;
+  "0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670" as const;
 
-export const CONTRACT_SOURCE_COMMIT = "ff0f222" as const;
+export const CONTRACT_SOURCE_COMMIT = "b415fc3" as const;
 export const CONTRACT_SOURCE_SHA256 =
-  "266d46d2ec964cee0c37b49bcbecaaf4f55d9e1cf7a933df3916a80b687e48e7" as const;
+  "dadeafe186b0396be16ede9b8c93c51bcb6d67ec888ee4717e0def9031ca1d74" as const;
 
 // genlayer-js network key (see genlayer-js/chains). StudioNet.
 export const GENLAYER_NETWORK = "studionet" as const;

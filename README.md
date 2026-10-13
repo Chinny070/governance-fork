@@ -12,11 +12,12 @@ verdict; the challenge is re-adjudicated, never counted as a vote.
 
 | | |
 |---|---|
-| **Production contract** | [`0xbA06003F2C254232E4D440B89425abc7Afd4c11A`](https://genlayer-explorer.vercel.app/address/0xbA06003F2C254232E4D440B89425abc7Afd4c11A) |
+| **Production contract** | [`0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670`](https://explorer-studio.genlayer.com/address/0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670) |
 | **Network** | GenLayer StudioNet (chain `61999` / `0xf22f`, RPC `https://studio.genlayer.com/api`) |
-| **Contract source** | [`contracts/governance_fork.py`](contracts/governance_fork.py) — commit `004dbd4` |
-| **Source SHA-256** | `dfe6ebc85cbb38ae1d7a4dcc07924af0facaa819c87289e4fe838c12e7c6e5f5` |
-| **ABI** | 16 write + 17 view + 2 admin (35 methods); `lock_bond` is the only payable method |
+| **Contract source** | [`contracts/governance_fork.py`](contracts/governance_fork.py) — commit `b415fc3` |
+| **Source SHA-256** | `dadeafe186b0396be16ede9b8c93c51bcb6d67ec888ee4717e0def9031ca1d74` |
+| **Verify it yourself** | `node scripts/verify-deployment.mjs 0x4aC19F1f24d8462f0F3b0B19d8A847e8C4415670` downloads the deployed code from StudioNet and compares its SHA-256 with the file in this repo. Evidence and history: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
+| **ABI** | 25 write + 23 view + 2 admin (50 methods); `lock_bond` and `fund_treasury` are the payable methods |
 | **Frontend** | [`webapp/`](webapp/) — Vite + React + TypeScript, deployed to GitHub Pages |
 
 ---

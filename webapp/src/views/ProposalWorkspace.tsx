@@ -582,6 +582,15 @@ function AdjudicationSection({
             </dd>
           </div>
 
+          {v.reason_codes.includes("COVERAGE:PARTIAL") && (
+            <p className="tiny" style={{ margin: "0 0 12px" }}>
+              <strong>Partial evidence.</strong> At least one source was longer
+              than the adjudicator can read at once, so it saw relevant excerpts
+              rather than the whole document. Open the source to check the
+              parts it did not see.
+            </p>
+          )}
+
           <div className="records">
             {v.dimensions.map((d, i) => (
               <div className="record" key={i}>
