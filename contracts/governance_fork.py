@@ -168,8 +168,6 @@ ADJUDICATION_DIMENSIONS_VERSION_ROOT_ENVELOPE = 1
 TOTAL_SEMANTIC_EVIDENCE_BUDGET = 16384
 MAX_DIM_RATIONALE_LEN = 600
 MAX_ADJUDICATION_OUTPUT_LEN = 8192
-SLICE_HEAD_NUM = 3   # head fraction numerator when a record is sliced
-SLICE_HEAD_DEN = 5   # ... denominator (head = cap * 3/5, tail = the rest)
 
 ADJ_SCHEMA_ROOT = "gf-adj-root/v1"
 ADJ_SCHEMA_FORK = "gf-adj-fork/v1"
@@ -956,7 +954,6 @@ _FORK_SUPPORT_DIMS = (
 
 _ALLOWED_ADJ_FINDINGS = (FINDING_SATISFIED, FINDING_NOT_SATISFIED, FINDING_UNCLEAR)
 
-_ADJ_SLICE_MARKER = "\n...[EVIDENCE EXCERPT TRUNCATED FOR LENGTH]...\n"
 
 # The comparison principle for prompt_comparative. Validators compare the
 # leader's structured result against their own: agreement is defined at the
@@ -995,7 +992,11 @@ _ADJ_SECURITY_PREAMBLE = (
     "Do not invent dimensions, do not propose fixes, do not change the "
     "output schema. Base every finding strictly on the SUBJECT and the "
     "EVIDENCE shown; if the evidence is insufficient for a dimension, its "
-    "finding is UNCLEAR."
+    "finding is UNCLEAR. Some EVIDENCE excerpts are PARTIAL (the header shows "
+    "coverage=shown/total and a PARTIAL EXCERPT note). Omitted text may hold "
+    "qualifications, exceptions or contradictions: for any dimension whose "
+    "answer could change depending on the omitted text, the finding is UNCLEAR, "
+    "not SATISFIED."
 )
 
 _ADJ_OUTPUT_INSTRUCTIONS = (
@@ -1077,22 +1078,74 @@ def _adj_line(label: str, value: str) -> str:
     return label + ": " + v
 
 
-def _slice_for_prompt(content: str, cap: int) -> str:
-    # Deterministic head/tail excerpt. head = (budget * 3) // 5, tail = the
-    # rest, joined by a fixed marker. Below the cap the content is used
-    # whole. cap is always >= 1.
-    if len(content) <= cap:
-        return content
-    budget = cap - len(_ADJ_SLICE_MARKER)
-    if budget <= 0:
-        return content[:cap]
-    head = (budget * SLICE_HEAD_NUM) // SLICE_HEAD_DEN
-    tail = budget - head
-    if head < 0:
-        head = 0
-    if tail < 0:
-        tail = 0
-    return content[:head] + _ADJ_SLICE_MARKER + content[len(content) - tail:]
+EXCERPT_BLOCK_CHARS = 800
+EXCERPT_GAP_MARKER = "\n[...omitted...]\n"
+EXCERPT_RESERVE = 400  # room for the gap markers inside the cap
+
+
+def _terms_of(text: str) -> list:
+    # Distinct lowercase words of 4+ letters: what the submitter says the
+    # source is relevant for. Deterministic (sorted).
+    seen = {}
+    word = ""
+    for ch in text.lower() + " ":
+        if ch.isalpha():
+            word = word + ch
+        else:
+            if len(word) >= 4:
+                seen[word] = True
+            word = ""
+    return sorted(seen.keys())
+
+
+def _excerpt_for_prompt(content: str, cap: int, terms: list):
+    """Deterministic, relevance-aware excerpt of a long document.
+
+    Returns (text, shown_chars, total_chars). Below the cap the whole document
+    is used. Otherwise the document is cut into fixed 800-char blocks, the
+    first block is always kept, and the remaining blocks are chosen by how many
+    of `terms` they contain (ties: earlier block first) until the budget is
+    used; chosen blocks are emitted in original order with a visible gap marker
+    between non-adjacent ones. This replaces a blind head/tail cut, which could
+    drop the one paragraph containing a decisive qualification.
+    """
+    total = len(content)
+    if total <= cap:
+        return content, total, total
+    budget = cap - EXCERPT_RESERVE
+    if budget < EXCERPT_BLOCK_CHARS:
+        return content[:cap], cap, total
+    n_blocks = (total + EXCERPT_BLOCK_CHARS - 1) // EXCERPT_BLOCK_CHARS
+    blocks = []
+    for i in range(n_blocks):
+        blocks.append(content[i * EXCERPT_BLOCK_CHARS:(i + 1) * EXCERPT_BLOCK_CHARS])
+    scored = []
+    for i in range(1, n_blocks):
+        low = blocks[i].lower()
+        score = 0
+        for t in terms:
+            if t in low:
+                score = score + 1
+        scored.append((-score, i))
+    scored.sort()
+    chosen = {0: True}
+    used = len(blocks[0])
+    for (_neg, i) in scored:
+        if used + len(blocks[i]) > budget:
+            continue
+        chosen[i] = True
+        used = used + len(blocks[i])
+    out = ""
+    shown = 0
+    prev = -1
+    for i in range(n_blocks):
+        if i in chosen:
+            if prev != -1 and i != prev + 1:
+                out = out + EXCERPT_GAP_MARKER
+            out = out + blocks[i]
+            shown = shown + len(blocks[i])
+            prev = i
+    return out, shown, total
 
 
 def _per_record_cap(n_eligible: int) -> int:
@@ -1107,16 +1160,30 @@ def _per_record_cap(n_eligible: int) -> int:
 
 
 def _render_evidence_block(eid_int: int, ev, per_record_cap: int) -> str:
-    body = _slice_for_prompt(_neutralise_delims(ev.frozen_content), per_record_cap)
+    text, shown, total = _excerpt_for_prompt(
+        _neutralise_delims(ev.frozen_content), per_record_cap, _terms_of(ev.relevance_claim)
+    )
     src = _neutralise_delims(ev.normalized_source).replace("\n", " ").replace("\r", " ")
     header = (
         "<<<EVIDENCE id=" + str(eid_int)
         + " source=" + src
         + " class=" + ev.evidence_class
         + " temporal=" + _neutralise_delims(ev.temporal_marker).replace("\n", " ").replace("\r", " ")
+        + " coverage=" + str(shown) + "/" + str(total)
         + ">>>"
     )
-    return header + "\n" + body + "\n<<<END EVIDENCE id=" + str(eid_int) + ">>>"
+    note = ""
+    if shown < total:
+        note = (
+            "\n[PARTIAL EXCERPT: " + str(shown) + " of " + str(total)
+            + " characters are shown; the rest is omitted and may contain "
+            "qualifications, exceptions or contradictions.]"
+        )
+    return header + note + "\n" + text + "\n<<<END EVIDENCE id=" + str(eid_int) + ">>>"
+
+
+def _evidence_is_partial(ev, per_record_cap: int) -> bool:
+    return len(ev.frozen_content) > per_record_cap
 
 
 def _assemble_prompt(schema_version, case_id_int, task_block, subject_block,
@@ -3146,6 +3213,19 @@ class Contract(gl.Contract):
             _root_subject_block(root, envelope), evidence_block,
         )
 
+    def _coverage_codes(self, eligible_ids):
+        # "COVERAGE:PARTIAL" is stored on the verdict when any evidence the
+        # adjudicator saw was an excerpt rather than the whole document, so a
+        # reader (and the UI) can tell a verdict rested on partial text.
+        n = len(eligible_ids)
+        if n < 1:
+            return []
+        cap = _per_record_cap(n)
+        for eid in eligible_ids:
+            if _evidence_is_partial(self.evidence[eid], cap):
+                return ["COVERAGE:PARTIAL"]
+        return []
+
     def _fork_parent_context(self, fork):
         # Stage 10 (steward-requested): the root ancestor + the immediate
         # parent's complete state (None when the parent IS the root -- see
@@ -3599,7 +3679,8 @@ class Contract(gl.Contract):
 
         self._commit_verdict(
             case_id, case, target_kind, verdict, ordered, eligible_ids,
-            _adj_reason_codes(verdict, ordered), prompt_fp,
+            _adj_reason_codes(verdict, ordered) + self._coverage_codes(eligible_ids),
+            prompt_fp,
         )
 
     # ---------------------------------------------------------------------

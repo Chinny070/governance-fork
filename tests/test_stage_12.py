@@ -218,5 +218,62 @@ class PayoutLedgerTests(unittest.TestCase):
         self.assertGreater(len(shim._EVM_TRANSFER_LOG), before)
 
 
+class EvidenceCoverageTests(unittest.TestCase):
+    def _doc(self):
+        filler = "Background paragraph about general matters. " * 18   # ~800 chars
+        parts = [filler] * 30
+        parts[17] = ("IMPORTANT EXCEPTION: the base fee burn does not apply to "
+                     "emergency transactions approved by the guardian council. ").ljust(800, ".")
+        return "".join(parts)
+
+    def test_short_document_is_used_whole(self):
+        text, shown, total = gf._excerpt_for_prompt("short text", 1000, ["fee"])
+        self.assertEqual((text, shown, total), ("short text", 10, 10))
+
+    def test_relevant_middle_qualification_survives_truncation(self):
+        doc = self._doc()
+        self.assertGreater(len(doc), 20000)
+        terms = gf._terms_of("Explains how the base fee burn works and any exception")
+        text, shown, total = gf._excerpt_for_prompt(doc, 8192, terms)
+        self.assertIn("IMPORTANT EXCEPTION", text)          # a head/tail cut would drop it
+        self.assertLessEqual(len(text), 8192)
+        self.assertEqual(total, len(doc))
+        self.assertLess(shown, total)
+        self.assertIn("[...omitted...]", text)
+
+    def test_excerpt_is_deterministic_and_keeps_the_opening(self):
+        doc = self._doc()
+        terms = gf._terms_of("base fee burn exception")
+        a = gf._excerpt_for_prompt(doc, 8192, terms)
+        b = gf._excerpt_for_prompt(doc, 8192, terms)
+        self.assertEqual(a, b)
+        self.assertTrue(a[0].startswith(doc[:200]))
+
+    def test_evidence_block_states_exact_coverage_and_partial_note(self):
+        class Ev:
+            frozen_content = self._doc()
+            normalized_source = "example.org"
+            evidence_class = "OFFICIAL_DOCUMENTATION"
+            temporal_marker = "current"
+            relevance_claim = "base fee burn exception"
+        block = gf._render_evidence_block(7, Ev(), 8192)
+        self.assertIn("coverage=", block)
+        self.assertIn("PARTIAL EXCERPT", block)
+        self.assertIn("IMPORTANT EXCEPTION", block)
+        small = gf._render_evidence_block(7, Ev(), 100000)
+        self.assertNotIn("PARTIAL EXCERPT", small)
+        self.assertIn("coverage=%d/%d" % (len(Ev.frozen_content), len(Ev.frozen_content)), small)
+
+    def test_prompt_tells_the_model_omitted_text_means_unclear(self):
+        self.assertIn("PARTIAL", gf._ADJ_SECURITY_PREAMBLE)
+        self.assertIn("UNCLEAR", gf._ADJ_SECURITY_PREAMBLE)
+
+    def test_partial_evidence_is_flagged_on_the_verdict(self):
+        class Ev:
+            frozen_content = "x" * 20000
+        self.assertTrue(gf._evidence_is_partial(Ev(), 8192))
+        self.assertFalse(gf._evidence_is_partial(Ev(), 50000))
+
+
 if __name__ == "__main__":
     unittest.main()
