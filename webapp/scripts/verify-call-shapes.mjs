@@ -50,6 +50,9 @@ const EXPECTED = {
   get_adoption: 1,
   get_fork_signal_count: 1,
   get_reputation: 1,
+  get_payout: 1,
+  get_payout_of_bond: 1,
+  get_reserves: 0,
   // writes
   register_dao: 2,
   import_root_proposal: 6,
@@ -71,11 +74,16 @@ const EXPECTED = {
   open_adoption: 1,
   signal_adoption: 1,
   close_adoption: 1,
+  confirm_payout: 1,
+  report_payout_not_received: 1,
+  resolve_payout: 2,
+  retry_payout: 1,
+  fund_treasury: 0,
   pause: 0,
   unpause: 0,
 };
 
-const PAYABLE = new Set(["lock_bond"]);
+const PAYABLE = new Set(["lock_bond", "fund_treasury"]);
 
 const schema = await getSchema();
 const methods = schema.methods ?? {};

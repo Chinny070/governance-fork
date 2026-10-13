@@ -29,7 +29,9 @@ import type {
   Evidence,
   Fork,
   PageIds,
+  Payout,
   Reputation,
+  Reserves,
   RootProposal,
   VerdictRecord,
 } from "./types";
@@ -63,6 +65,12 @@ export const getForkSignalCount = (forkId: bigint | number) =>
   view<number>("get_fork_signal_count", [BigInt(forkId)]);
 export const getReputation = (creatorHex: string) =>
   view<Reputation>("get_reputation", [creatorHex.toLowerCase()]);
+
+export const getPayout = (id: bigint | number) =>
+  viewOpt<Payout>("get_payout", [BigInt(id)]);
+export const getPayoutOfBond = (bondId: bigint | number) =>
+  view<number>("get_payout_of_bond", [BigInt(bondId)]);
+export const getReserves = () => view<Reserves>("get_reserves");
 
 export const listDaos = (cursor = 0n, limit = PAGE) =>
   view<PageIds>("list_daos", [cursor, limit]);
@@ -371,3 +379,19 @@ export const signalAdoption = (c: GenLayerClient, forkId: bigint) =>
   writeAndWait(c, "signal_adoption", [forkId]);
 export const closeAdoption = (c: GenLayerClient, rootId: bigint) =>
   writeAndWait(c, "close_adoption", [rootId]);
+
+// Stage 12: payout ledger / reconciliation.
+export const confirmPayout = (c: GenLayerClient, payoutId: bigint) =>
+  writeAndWait(c, "confirm_payout", [payoutId]);
+export const reportPayoutNotReceived = (c: GenLayerClient, payoutId: bigint) =>
+  writeAndWait(c, "report_payout_not_received", [payoutId]);
+export const resolvePayout = (
+  c: GenLayerClient,
+  payoutId: bigint,
+  delivered: boolean,
+) => writeAndWait(c, "resolve_payout", [payoutId, delivered]);
+export const retryPayout = (c: GenLayerClient, payoutId: bigint) =>
+  writeAndWait(c, "retry_payout", [payoutId]);
+/** Payable. Tops up the treasury pool (funds failed-payment retries). */
+export const fundTreasury = (c: GenLayerClient, amountWei: bigint) =>
+  writeAndWait(c, "fund_treasury", [], amountWei);

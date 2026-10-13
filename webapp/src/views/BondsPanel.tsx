@@ -6,21 +6,131 @@ import { navigate } from "../lib/router";
 import { useAsync } from "../lib/useAsync";
 import { useTx } from "../lib/useTx";
 import { useWallet } from "../lib/wallet";
-import type { Bond } from "../lib/types";
+import type { Bond, Payout } from "../lib/types";
 import { AddrChip, Empty, Note, SectionHead, Spinner, StatusTag } from "../components/ui";
 import { Guarded } from "../components/Guarded";
 import { TxProgress } from "../components/TxProgress";
 
 const SCAN_CAP = 400;
 
-async function scanBonds(): Promise<{ id: bigint; bond: Bond }[]> {
-  const out: { id: bigint; bond: Bond }[] = [];
+type BondRow = { id: bigint; bond: Bond; payoutId: bigint; payout?: Payout };
+
+async function scanBonds(): Promise<BondRow[]> {
+  const out: BondRow[] = [];
   for (let i = 1n; i <= BigInt(SCAN_CAP); i++) {
     const bond = await api.getBond(i);
     if (!bond) break;
-    out.push({ id: i, bond });
+    let payoutId = 0n;
+    let payout: Payout | undefined;
+    if (bond.settled) {
+      payoutId = BigInt(await api.getPayoutOfBond(i));
+      if (payoutId > 0n) payout = await api.getPayout(payoutId);
+    }
+    out.push({ id: i, bond, payoutId, payout });
   }
   return out;
+}
+
+const PAYOUT_HELP: Record<string, string> = {
+  SENT: "Transfer sent; delivery not yet confirmed.",
+  CONFIRMED: "Delivery confirmed (final).",
+  DISPUTED: "Recipient reports it did not arrive; awaiting admin review.",
+  RETRYABLE: "Admin attested non-delivery; one more send is allowed.",
+};
+
+function PayoutCell({
+  row,
+  account,
+  admin,
+  tx,
+  refresh,
+}: {
+  row: BondRow;
+  account?: string | null;
+  admin?: string;
+  tx: ReturnType<typeof useTx>;
+  refresh: () => void;
+}) {
+  const po = row.payout;
+  if (!row.bond.settled) return <span className="faint tiny">—</span>;
+  if (!po) return <span className="faint tiny">none (nothing owed)</span>;
+  const isRecipient = sameAddr(po.recipient, account);
+  const isAdmin = sameAddr(admin, account);
+  const act = (fn: () => Promise<unknown>) =>
+    void tx.run(async () => {
+      const r = (await fn()) as { hash: string };
+      return r as never;
+    }, { afterConfirm: refresh });
+  return (
+    <div className="stack" style={{ gap: 4 }}>
+      <div className="row" style={{ gap: 6 }}>
+        <StatusTag value={po.status} dot={false} />
+        <span className="tiny faint" title={PAYOUT_HELP[po.status] ?? ""}>
+          #{row.payoutId.toString()} · {po.attempts} attempt{Number(po.attempts) === 1 ? "" : "s"}
+        </span>
+      </div>
+      <Guarded>
+        <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+          {(po.status === "SENT" || po.status === "DISPUTED") && (isRecipient || isAdmin) && (
+            <button className="small" disabled={tx.busy}
+              onClick={() => act(() => api.confirmPayout(g(), row.payoutId))}>
+              Confirm received
+            </button>
+          )}
+          {po.status === "SENT" && isRecipient && (
+            <button className="small" disabled={tx.busy}
+              onClick={() => act(() => api.reportPayoutNotReceived(g(), row.payoutId))}>
+              Not received
+            </button>
+          )}
+          {(po.status === "SENT" || po.status === "DISPUTED") && isAdmin && (
+            <button className="small" disabled={tx.busy}
+              onClick={() => act(() => api.resolvePayout(g(), row.payoutId, false))}>
+              Admin: not delivered
+            </button>
+          )}
+          {po.status === "RETRYABLE" && (isRecipient || isAdmin) && (
+            <button className="small primary" disabled={tx.busy}
+              onClick={() => act(() => api.retryPayout(g(), row.payoutId))}>
+              Retry send
+            </button>
+          )}
+        </div>
+      </Guarded>
+    </div>
+  );
+}
+
+function ReservesCard() {
+  const r = useAsync(api.getReserves, []);
+  if (!r.data) return null;
+  const d = r.data;
+  const short = BigInt(d.shortfall) > 0n;
+  return (
+    <div className="section">
+      <SectionHead eyebrow="Reconciliation" title="Contract reserves" />
+      <div className="dl">
+        <dt>Contract balance</dt>
+        <dd className="num">{formatGen(d.contract_balance)}</dd>
+        <dt>Locked bonds</dt>
+        <dd className="num">{formatGen(d.locked_bonds)}</dd>
+        <dt>Treasury pool</dt>
+        <dd className="num">{formatGen(d.treasury_pool)}</dd>
+        <dt>Payments awaiting confirmation</dt>
+        <dd className="num">{formatGen(d.in_flight_payouts)}</dd>
+        <dt>Shortfall</dt>
+        <dd>
+          <StatusTag value={short ? "SHORTFALL" : "COVERED"} dot={false} />{" "}
+          <span className="num">{formatGen(d.shortfall)}</span>
+        </dd>
+      </div>
+      <p className="tiny faint" style={{ marginTop: 8 }}>
+        Balance must cover locked bonds plus the treasury pool. A payment that
+        did not arrive can be retried only after the treasury admin attests it,
+        and only from the treasury pool, never from other participants' bonds.
+      </p>
+    </div>
+  );
 }
 
 function targetHref(bond: Bond): { label: string; go: () => void } | null {
@@ -40,6 +150,7 @@ function targetHref(bond: Bond): { label: string; go: () => void } | null {
 export function BondsPanel() {
   const w = useWallet();
   const all = useAsync(scanBonds, []);
+  const consts = useAsync(api.getConstants, []);
   const tx = useTx();
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [lookup, setLookup] = useState("");
@@ -66,6 +177,8 @@ export function BondsPanel() {
       </div>
 
       <TxProgress tx={tx} />
+
+      <ReservesCard />
 
       <div className="section">
         <SectionHead
@@ -128,11 +241,12 @@ export function BondsPanel() {
                   <th>Slash</th>
                   <th>Reward</th>
                   <th>Settlement</th>
+                  <th>Payout</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ id, bond }) => {
+                {rows.map(({ id, bond, payoutId, payout }) => {
                   const tgt = targetHref(bond);
                   const unassigned = BigInt(bond.target_id) === 0n;
                   const settleable = !bond.settled;
@@ -166,6 +280,15 @@ export function BondsPanel() {
                       </td>
                       <td>
                         <StatusTag value={bond.settlement_kind} dot={false} />
+                      </td>
+                      <td>
+                        <PayoutCell
+                          row={{ id, bond, payoutId, payout }}
+                          account={w.account}
+                          admin={consts.data?.treasury_addr as string | undefined}
+                          tx={tx}
+                          refresh={all.refresh}
+                        />
                       </td>
                       <td>
                         {settleable &&

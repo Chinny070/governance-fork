@@ -217,3 +217,23 @@ export interface Reputation {
   forks_not_faithful: number;
   forks_adopted: number;
 }
+
+export interface Payout {
+  recipient: Address;
+  amount: bigint;
+  source_kind: string;
+  source_id: bigint;
+  status: string;
+  attempts: number;
+  created_at: bigint;
+  updated_at: bigint;
+}
+
+export interface Reserves {
+  contract_balance: bigint;
+  locked_bonds: bigint;
+  treasury_pool: bigint;
+  in_flight_payouts: bigint;
+  obligations: bigint;
+  shortfall: bigint;
+}
