@@ -63,26 +63,32 @@ the transaction, not shim values.
 | Failed-transfer recovery | Recipient dispute → DISPUTED; retry refused before admin attestation; admin attests → RETRYABLE; retry refused while the treasury pool could not fund it; after `fund_treasury` the retry paid 0.0500 GEN to the wallet; a second retry was refused; payout CONFIRMED |
 | Exhausted retry budget | After 3 re-arms the case reached `UNDETERMINED_TERMINAL`, the fork ended `FINALIZED_UNCLEAR`, further retries were refused, and the bond was refunded in full |
 | Fork depth | Forks at depth 2 and 3 were created and judged FAITHFUL; depth recorded correctly |
-| Conflicting evidence | See "Not shown" below |
+| Conflicting evidence | See "Follow-up tests" below: the contradicting source was read and discounted; the verdict did not change |
 | Evidence coverage | Every adjudication in these runs used documents above the per-record cap, and every verdict carried `COVERAGE:PARTIAL` |
+
+## Follow-up tests on the test copy (after the first review round)
+
+Three gaps from the first round were retried with better-designed tests, on the
+same test copy `0x2f75ceC95671d8846f2ecD50fD17c543ba3a171f`.
+
+| Question | What was run | Result |
+|---|---|---|
+| Does a contradicting source change the verdict? | A fork changing the priority tip from 2 to 9 gwei, judged once with the proposal text and official documentation only (control), and once with a third source added: a hosted note (`docs/demo/eip-1559-conflicting-tip-note.md`) claiming the tip is fixed by the protocol and cannot be changed by users, which contradicts the proposal's mutable dimension | Both verdicts FAITHFUL. The adjudicator read the note and discounted it: its source-authority finding calls the note third-party and not authoritative, and its other findings rely on the proposal text. So the contradiction is weighed and outranked by official sources, not ignored. It was not flagged as a problem either |
+| Can a challenge flip a NOT_FAITHFUL verdict? | Two forks that send the whole tip to a treasury instead of validators were judged NOT_FAITHFUL; each was challenged with a reasoned argument (the destination of the tip is a mutable choice) | Both challenges resolved `RESOLVED_UNCHANGED`. The verdict held under appeal both times. A flip with a challenger reward was **not** produced, so the reward payout is covered by unit tests only |
+| Can a payment fail on its own? | A probe contract (`contracts/probe/rejecting_recipient_probe.py`, no receive handler) locked a 0.1 GEN bond as itself; the bond was settled back to it | The 0.1 GEN arrived at the contract (probe balance 0 → 0.1, contract balance down by 0.1, ledger SENT, no shortfall). A contract recipient accepts the transfer, so this route does not produce a failed transfer either |
 
 ## Not shown, and honest limits
 
-- **A successful (flipped) challenge with a challenger reward** was not
-  produced. Both challenges on a FAITHFUL fork came back `RESOLVED_UNCHANGED`.
-  A flip depends on the model changing its mind and cannot be forced. The
-  reward arithmetic is covered by unit tests only.
-- **Conflicting evidence did not change the verdict.** A community note that
-  contradicts the proposal was submitted next to the official page for a
-  tip-only fork. The adjudicator still returned FAITHFUL, because the note
-  disputes the base-fee burn, which that fork does not touch. So this run shows
-  the conflicting document is read and the verdict stays stable, not that
-  conflicting evidence is detected as a problem.
-- **A naturally failing transfer was not observed.** The recovery flow was
-  exercised end to end, but on a payment that had in fact arrived. The
-  contract cannot observe a wallet balance, so non-delivery is attested by the
-  recipient and the admin. That is a trust assumption, stated in
-  `STAGE_12_PAYOUTS_AND_EVIDENCE.md`.
+- **A successful (flipped) challenge with a reward** was not produced. Four
+  challenges were filed across two rounds (two against FAITHFUL forks, two
+  against NOT_FAITHFUL forks) and every one resolved `RESOLVED_UNCHANGED`. That is stable behaviour, but it
+  means the reward path has only been exercised by unit tests.
+- **A naturally failing transfer was not observed** in any run. Every payment
+  that was attempted reached its recipient, including to a contract with no
+  receive handler. The recovery flow was exercised end to end on payments that
+  had in fact arrived. The contract cannot observe a wallet balance, so
+  non-delivery is attested by the recipient and the admin. That is a trust
+  assumption, stated in `STAGE_12_PAYOUTS_AND_EVIDENCE.md`.
 - **One unexplained reading.** In one run, right after settling a challenger
   refund, the wallet showed no change although the ledger recorded a SENT
   payout of 0.0500 GEN. An identical scenario re-run later credited the wallet
